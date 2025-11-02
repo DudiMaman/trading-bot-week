@@ -1,64 +1,42 @@
-<!doctype html>
-<html lang="he" dir="rtl">
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="he">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8" />
   <title>Trading Bot Dashboard</title>
-  <link rel="stylesheet" href="/static/css/app.css" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <script defer src="/static/script.js"></script>
 </head>
 <body>
-  <header class="wrap">
-    <div class="brand">
-      <div class="logo">🤖</div>
-      <h1>Trading Bot Dashboard</h1>
-    </div>
+  <header>
+    <h1>Trading Bot Dashboard 🤖</h1>
     <div class="status-bar">
-      <span id="status-badge" class="badge">—</span>
-      <span id="override-badge" class="badge badge-muted" style="display:none;">Manual</span>
+      <button id="csv-download" onclick="downloadCSV()">Download CSV</button>
+      <div>Log dir<br><span id="log-dir">—</span></div>
+      <div>
+        Timezone<br>
+        <select id="tz-select" onchange="onTZChange(this)">
+          <option value="Asia/Jerusalem" selected>IL time</option>
+          <option value="UTC">UTC</option>
+        </select>
+      </div>
+      <div>
+        Last refresh<br><span id="last-refresh">—</span>
+      </div>
     </div>
   </header>
 
-  <section class="wrap info">
-    <div class="info-item">
-      <div class="label">Last refresh</div>
-      <div id="last-refresh" class="value">—</div>
-    </div>
-    <div class="info-item">
-      <div class="label">Timezone</div>
-      <select id="tz-select">
-      </select>
-    </div>
-    <div class="info-item">
-      <div class="label">Log dir</div>
-      <div id="log-dir" class="value">—</div>
-    </div>
-    <div class="info-item">
-      <a id="download-csv" class="btn" href="/export/trades.csv" download>Download CSV</a>
-    </div>
-  </section>
-
-  <section class="wrap table-wrap">
-    <h2>Trades <span class="sub">(תצוגה לפי אזור הזמן שנבחר)</span></h2>
+  <section>
+    <h2>Trades <span>(תצוגה לפי אזור הזמן שנבחר)</span></h2>
     <table id="trades-table">
       <thead>
         <tr>
-          <th>Time</th>
-          <th>Symbol</th>
-          <th>Price</th>
-          <th>Qty</th>
-          <th>PnL</th>
-          <th>Equity</th>
+          <th>Equity</th><th>PnL</th><th>Qty</th><th>Price</th><th>Type</th><th>Side</th><th>Symbol</th><th>Time</th>
         </tr>
       </thead>
       <tbody></tbody>
     </table>
-    <div id="empty-trades" class="empty" style="display:none;">אין טריידים להצגה בטווח הנוכחי.</div>
+    <p class="footnote">תצוגת הזמן בדשבורד נקבעת לפי הבחירה בתפריט אזור הזמן למעלה — המערכת פועלת בפועל בשעון UTC.</p>
   </section>
-
-  <footer class="wrap foot">
-    <small>תצוגת הזמן בדשבורד נקבעת לפי הבחירה באפשרויות למעלה — המערכת פועלת בשעון UTC.</small>
-  </footer>
-
-  <script defer src="/static/js/app.js"></script>
 </body>
 </html>
