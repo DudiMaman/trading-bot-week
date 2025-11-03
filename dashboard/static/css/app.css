@@ -1,0 +1,141 @@
+/* app.css — Dashboard styling (no changes were required here for the timezone update) */
+
+:root {
+  --bg: #0d1117;
+  --fg: #c9d1d9;
+  --muted: #8b949e;
+  --card: #161b22;
+  --green: #56d364;
+  --red: #f85149;
+}
+
+/* Basic resets and layout */
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  padding: 0;
+  color: var(--fg);
+  background: var(--bg);
+  font-family: Arial, sans-serif;
+  line-height: 1.5;
+}
+.wrap {
+  width: 90%;
+  max-width: 1200px;
+  margin: auto;
+  padding: 16px 0;
+}
+header.wrap {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 0;
+}
+.brand {
+  display: flex;
+  align-items: center;
+}
+.brand .logo {
+  font-size: 32px;
+  margin-right: 8px;
+}
+.brand h1 {
+  font-size: 24px;
+  margin: 0;
+}
+.status-bar {
+  display: flex;
+  gap: 8px;
+}
+.badge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+.badge-green { background: var(--green); color: #fff; }
+.badge-red { background: var(--red); color: #fff; }
+.badge-muted { background: #30363d; color: var(--muted); }
+
+/* Info cards at the top */
+.wrap.info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.info-item {
+  background: var(--card);
+  border: 1px solid #2a2f3a;
+  border-radius: 12px;
+  padding: 12px;
+  min-width: 120px;
+}
+.info-item .label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.info-item .value {
+  font-size: 16px;
+  font-weight: bold;
+}
+.info-item .btn {
+  display: inline-block;
+  padding: 6px 12px;
+  text-decoration: none;
+  color: #fff;
+  background: #238636;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+/* Table styles */
+.table-wrap {
+  background: var(--card);
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  padding: 12px;
+  overflow-x: auto;
+}
+.table-wrap h2 {
+  margin-top: 0;
+  font-size: 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.table-wrap .sub {
+  font-size: 14px;
+  font-weight: normal;
+  color: var(--muted);
+}
+#trades-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+#trades-table th, #trades-table td {
+  padding: 8px;
+  text-align: right;
+  border-bottom: 1px solid #30363d;
+}
+#trades-table th {
+  background: #21262d;
+}
+#trades-table td {
+  vertical-align: top;
+}
+.empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 16px 0;
+}
+
+/* Footer */
+.wrap.foot {
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  padding-bottom: 16px;
+}

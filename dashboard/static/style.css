@@ -1,0 +1,132 @@
+body {
+  font-family: sans-serif;
+  background: #f7f7f7;
+  margin: 0;
+  padding: 0;
+  color: #333;
+  direction: rtl;
+}
+
+.wrap {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logo {
+  font-size: 2rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0;
+}
+
+.status-bar {
+  display: flex;
+  gap: 1rem;
+}
+
+.badge {
+  padding: 0.3em 0.6em;
+  background: #ccc;
+  border-radius: 0.3em;
+  font-weight: bold;
+}
+
+.badge-ok {
+  background: #4caf50;
+  color: white;
+}
+
+.badge-stop {
+  background: #f44336;
+  color: white;
+}
+
+.badge-muted {
+  background: #999;
+  color: white;
+}
+
+.info {
+  display: flex;
+  gap: 2rem;
+  flex-wrap: wrap;
+  margin: 1rem 0;
+}
+
+.info-item {
+  flex: 1 1 200px;
+}
+
+.label {
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+}
+
+.value {
+  background: white;
+  padding: 0.5rem;
+  border-radius: 0.3em;
+  border: 1px solid #ddd;
+}
+
+.btn {
+  display: inline-block;
+  background: #2196f3;
+  color: white;
+  padding: 0.5rem 1rem;
+  text-decoration: none;
+  border-radius: 0.3em;
+}
+
+.table-wrap {
+  background: white;
+  padding: 1rem;
+  border-radius: 0.3em;
+  border: 1px solid #ddd;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+th, td {
+  border: 1px solid #ddd;
+  padding: 0.5rem;
+  text-align: center;
+}
+
+th {
+  background: #eee;
+}
+
+.pos {
+  color: green;
+}
+
+.neg {
+  color: red;
+}
+
+.empty {
+  text-align: center;
+  margin-top: 1rem;
+  font-style: italic;
+}
+
+footer {
+  text-align: center;
+  font-size: 0.9rem;
+  margin-top: 2rem;
+  color: #666;
+}
