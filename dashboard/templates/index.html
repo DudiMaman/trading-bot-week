@@ -1,33 +1,52 @@
 <!-- templates/index.html -->
 <!DOCTYPE html>
-<html lang="he">
+<html lang="he" dir="rtl">
 <head>
   <meta charset="UTF-8" />
   <title>Trading Bot Dashboard</title>
   <link rel="stylesheet" href="/static/style.css" />
-  <script defer src="/static/script.js"></script>
+  <style>
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial; background:#0f172a; color:#e5e7eb; margin:0; }
+    header { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid #1f2937; }
+    h1 { margin:0; font-size:20px; }
+    .status-bar { display:flex; gap:16px; align-items:center; font-size:12px; }
+    .status-pill { padding:6px 10px; border-radius:999px; font-weight:700; border:1px solid #1f2937; }
+    .ok { background:rgba(34,197,94,.12); color:#22c55e; border-color:rgba(34,197,94,.35); }
+    .err { background:rgba(239,68,68,.12); color:#ef4444; border-color:rgba(239,68,68,.35); }
+    section { padding:16px 20px; }
+    table { width:100%; border-collapse:collapse; font-size:13px; direction:ltr; }
+    th, td { padding:8px 10px; border-bottom:1px dashed #1f2937; }
+    th { text-align:left; color:#9ca3af; font-weight:600; }
+    .muted { color:#9ca3af; font-size:12px; }
+    button { padding:8px 12px; border-radius:10px; font-weight:600; border:1px solid #1f2937; background:#0b1220; color:#e5e7eb; cursor:pointer; }
+    button:hover { background:#0f1627; }
+    select { padding:6px 8px; border-radius:8px; background:#0b1220; color:#e5e7eb; border:1px solid #1f2937; }
+    .grid { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; }
+    .cell { background:#0b1220; border:1px solid #1f2937; border-radius:10px; padding:8px 10px; }
+    .cell small { color:#9ca3af; display:block; }
+  </style>
 </head>
 <body>
   <header>
     <h1>Trading Bot Dashboard 🤖</h1>
     <div class="status-bar">
-      <button id="csv-download" onclick="downloadCSV()">Download CSV</button>
-      <div>Log dir<br><span id="log-dir">—</span></div>
+      <span id="status-pill" class="status-pill err">—</span>
+      <div class="cell"><small>Last refresh</small><span id="last-refresh">—</span></div>
+      <div class="cell"><small>Source</small><span id="status-source">—</span></div>
+      <div class="cell"><small>Log dir</small><span id="log-dir">—</span></div>
       <div>
-        Timezone<br>
-        <select id="tz-select" onchange="onTZChange(this)">
-          <option value="Asia/Jerusalem" selected>IL time</option>
+        <small>Timezone</small><br>
+        <select id="tz-select">
+          <option value="IL" selected>IL time</option>
           <option value="UTC">UTC</option>
         </select>
       </div>
-      <div>
-        Last refresh<br><span id="last-refresh">—</span>
-      </div>
+      <button id="csv-download">Download CSV</button>
     </div>
   </header>
 
   <section>
-    <h2>Trades <span>(תצוגה לפי אזור הזמן שנבחר)</span></h2>
+    <h2>Trades <span class="muted">(התצוגה לפי אזור הזמן שנבחר)</span></h2>
     <table id="trades-table">
       <thead>
         <tr>
@@ -36,8 +55,118 @@
       </thead>
       <tbody></tbody>
     </table>
-    <p class="footnote">תצוגת הזמן בדשבורד נקבעת לפי הבחירה בתפריט אזור הזמן למעלה — המערכת פועלת בפועל בשעון UTC.</p>
+    <p class="muted">המערכת פועלת בפועל ב-UTC; העמוד מציג זמנים לפי הבחירה למעלה. ברירת המחדל: עסקאות חיות מ-<code>bybit</code> (לא טסטנט).</p>
   </section>
-  <script defer src="/static/js/tz-toggle.js"></script>
+
+  <script>
+    // ===== Helpers =====
+    const $ = s => document.querySelector(s);
+    const fmtNum = (x, d=2) => {
+      const n = Number(x);
+      return Number.isFinite(n) ? n.toFixed(d) : (x ?? "");
+    };
+
+    // state
+    let tz = "IL"; // IL | UTC
+    let lastTrades = [];
+
+    // ===== Wire UI =====
+    $("#csv-download").addEventListener("click", () => {
+      // יצוא CSV (מקור CSV; שימושי לגיבוי/בדיקות)
+      window.location.href = "/export/trades.csv";
+    });
+
+    $("#tz-select").addEventListener("change", (e) => {
+      tz = e.target.value;
+      renderTrades(lastTrades); // רנדר מחדש לפי בחירת אזור הזמן
+    });
+
+    // ===== Fetchers =====
+    async function fetchStatus() {
+      const r = await fetch("/api/status", { cache: "no-store" });
+      if (!r.ok) throw new Error("status failed");
+      return r.json();
+    }
+
+    async function fetchHealth() {
+      const r = await fetch("/health", { cache: "no-store" });
+      if (!r.ok) throw new Error("health failed");
+      return r.json();
+    }
+
+    async function fetchTrades() {
+      // ברירת מחדל: connector=bybit, limit=500
+      const r = await fetch("/api/trades_db?limit=500", { cache: "no-store" });
+      if (r.status === 503) {
+        // אין DB — ננסה את /data (CSV) כגיבוי
+        const b = await (await fetch("/data", { cache: "no-store" })).json();
+        // /data מחזיר trades עם time_il כבר לצרכי תצוגה
+        return b.trades || [];
+      }
+      if (!r.ok) throw new Error("trades failed");
+      return r.json();
+    }
+
+    // ===== Renderers =====
+    function renderStatus(st) {
+      const pill = $("#status-pill");
+      pill.textContent = st.status || "—";
+      pill.classList.toggle("ok", st.status === "RUNNING");
+      pill.classList.toggle("err", st.status !== "RUNNING");
+
+      $("#status-source").textContent = st.source || (st.manual_override ? "manual" : "csv");
+      $("#last-refresh").textContent = (st.last_update || new Date().toISOString()).replace("T"," ").replace("Z","");
+    }
+
+    function renderHealth(h) {
+      $("#log-dir").textContent = h.log_dir || "—";
+    }
+
+    function timeForRow(row) {
+      if (tz === "IL" && row.time_il) return row.time_il;           // מהשרת
+      if (row.time) return String(row.time).replace("T"," ").replace("Z","");
+      return "";
+    }
+
+    function renderTrades(rows) {
+      lastTrades = rows;
+      const tb = $("#trades-table tbody");
+      tb.innerHTML = "";
+      // מציגים עד 500 אחרונים (ה־API כבר מגביל)
+      rows.forEach(r => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${fmtNum(r.equity, 2)}</td>
+          <td>${fmtNum(r.pnl, 2)}</td>
+          <td>${fmtNum(r.qty, 6)}</td>
+          <td>${fmtNum(r.price, 6)}</td>
+          <td>${r.type ?? ""}</td>
+          <td>${r.side ?? ""}</td>
+          <td>${r.symbol ?? ""}</td>
+          <td>${timeForRow(r)}</td>
+        `;
+        tb.appendChild(tr);
+      });
+    }
+
+    // ===== Tick =====
+    async function tick() {
+      try {
+        const [st, h, trades] = await Promise.all([
+          fetchStatus(),
+          fetchHealth(),
+          fetchTrades()
+        ]);
+        renderStatus(st);
+        renderHealth(h);
+        renderTrades(trades);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    tick();
+    setInterval(tick, 10_000);
+  </script>
 </body>
 </html>
