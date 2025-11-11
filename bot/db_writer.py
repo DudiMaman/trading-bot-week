@@ -9,6 +9,53 @@ DB helper עם fallback:
 - יוצר סכימה (טבלאות) אם לא קיימות.
 """
 
+# =========================
+# Connector label (single source of truth)
+# =========================
+def _as_bool(v):
+    if v is None:
+        return False
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
+_IS_TESTNET = _as_bool(os.getenv("BYBIT_TESTNET")) or _as_bool(os.getenv("TESTNET"))
+# ניתן לעקוף ידנית דרך ENV: CONNECTOR_LABEL=bybit
+_CONNECTOR_LABEL = os.getenv("CONNECTOR_LABEL") or ("bybit_testnet" if _IS_TESTNET else "bybit")
+
+def connector_label() -> str:
+    return _CONNECTOR_LABEL
+
+def _normalize_trade_rows(rows):
+    """
+    מקבל iterable של רשומות טריידים ומחזיר list של tuples בסדר העמודות:
+    (time, connector, symbol, type, side, price, qty, pnl, equity)
+    - אם התקבל dict — נרכיב ממנו tuple לפי שמות השדות.
+    - אם התקבל tuple/list — נחליף את האיבר השני (connector) בתווית האחידה.
+    """
+    out = []
+    for r in rows:
+        if isinstance(r, dict):
+            out.append((
+                r.get("time"),
+                connector_label(),
+                r.get("symbol"),
+                r.get("type"),
+                r.get("side"),
+                r.get("price"),
+                r.get("qty"),
+                r.get("pnl"),
+                r.get("equity"),
+            ))
+        else:
+            # tuple/list
+            lst = list(r)
+            if len(lst) < 9:
+                # חסר/שגוי – מדלגים בשקט
+                continue
+            lst[1] = connector_label()
+            out.append(tuple(lst))
+    return out
+
+
 # -------------------------
 # No-Op (CSV only)
 # -------------------------
@@ -97,7 +144,8 @@ def _make_psycopg_db(conn_str):
                 )
 
         def write_trades(self, rows):
-            if not rows:
+            normalized = _normalize_trade_rows(rows)
+            if not normalized:
                 return
             with self.conn.cursor() as cur:
                 cur.executemany(
@@ -107,7 +155,7 @@ def _make_psycopg_db(conn_str):
                     values
                       (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    rows
+                    normalized
                 )
 
         def write_equity(self, e):
@@ -184,7 +232,8 @@ def _make_psycopg2_db(conn_str):
                 )
 
         def write_trades(self, rows):
-            if not rows:
+            normalized = _normalize_trade_rows(rows)
+            if not normalized:
                 return
             with self.conn.cursor() as cur:
                 cur.executemany(
@@ -194,7 +243,7 @@ def _make_psycopg2_db(conn_str):
                     values
                       (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    rows
+                    normalized
                 )
 
         def write_equity(self, e):
