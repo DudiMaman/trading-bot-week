@@ -3,7 +3,7 @@ live_connectors:
     type: ccxt
     exchange_id: bybit
     paper: false
-    default_type: spot
+    default_type: swap
     symbols: ["AUTO"]
     timeframe: "1m"
     htf_timeframe: "5m"
