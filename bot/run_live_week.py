@@ -154,8 +154,18 @@ def main():
     tm = TradeManager(**clean_t)
 
     # 4) Portfolio
-    portfolio = cfg.get("portfolio", {}) or {}
-    equity = float(portfolio.get("equity0", 100_000.0))
+   portfolio = cfg.get("portfolio", {}) or {}
+   equity_config = portfolio.get("equity0", 100_000.0)
+
+if equity_config == "auto":
+    from bot.connectors.ccxt_connector import CCXTConnector
+    connector = CCXTConnector("bybit", paper=False, default_type="swap")
+    connector.init()
+    balance = connector.exchange.fetch_balance({"type": "UNIFIED"})
+    equity = float(balance["USDT"]["free"])
+    print(f"💰 Equity auto-fetched from Bybit: {equity:.2f}")
+else:
+    equity = float(equity_config)
     rm = RiskManager(
         equity=equity,
         risk_per_trade=float(portfolio.get("risk_per_trade", 0.005)),
