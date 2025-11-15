@@ -1,10 +1,10 @@
 live_connectors:
-  - name: bybit_testnet
+  - name: bybit
     type: ccxt
     exchange_id: bybit
-    paper: true
+    paper: false
     default_type: spot
-    symbols: ["AUTO", "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
+    symbols: ["AUTO"]
     timeframe: "1m"
     htf_timeframe: "5m"
 
