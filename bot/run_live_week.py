@@ -154,8 +154,8 @@ def main():
     tm = TradeManager(**clean_t)
 
     # 4) Portfolio
-   portfolio = cfg.get("portfolio", {}) or {}
-   equity_config = portfolio.get("equity0", 100_000.0)
+    portfolio = cfg.get("portfolio", {}) or {}
+    equity_config = portfolio.get("equity0", 100_000.0)
 
 if equity_config == "auto":
     from bot.connectors.ccxt_connector import CCXTConnector
