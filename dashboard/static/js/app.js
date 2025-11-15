@@ -1,4 +1,3 @@
-console.log("✅ app.js loaded from dashboard/static/js/");
 // app.js — Dynamic dashboard view with timezone selection support
 const TIMEZONES = {
   'Asia/Jerusalem': 'IL time',
