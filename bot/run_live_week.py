@@ -155,7 +155,9 @@ def main():
 
     # 4) Portfolio
     portfolio = cfg.get("portfolio", {}) or {}
-    equity_config = portfolio.get("equity0", 100_000.0)
+equity = float(portfolio.get("equity", 100_000.0))
+equity_config = portfolio.get("equity_config", "auto")
+equity_config = os.getenv("EQUITY_CONFIG", equity_config)
 
 if equity_config == "auto":
     from bot.connectors.ccxt_connector import CCXTConnector
