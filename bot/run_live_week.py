@@ -165,8 +165,21 @@ def main():
 
     if equity_config == "auto":
         from bot.connectors.ccxt_connector import CCXTConnector
+
+        # לוקחים את המפתחות מה-ENV / .env
+        api_key = os.getenv("BYBIT_API_KEY")
+        api_secret = os.getenv("BYBIT_API_SECRET")
+
+        if not api_key or not api_secret:
+            raise RuntimeError("Missing BYBIT_API_KEY / BYBIT_API_SECRET for live equity auto-mode")
+
         connector = CCXTConnector("bybit", paper=False, default_type="swap")
         connector.init()
+
+        # מזריקים את המפתחות ישירות לאובייקט של ccxt
+        connector.exchange.apiKey = api_key
+        connector.exchange.secret = api_secret
+
         balance = connector.exchange.fetch_balance({"type": "UNIFIED"})
         equity = float(balance["USDT"]["free"])
         print(f"💰 Equity auto-fetched from Bybit: {equity:.2f}")
@@ -178,6 +191,7 @@ def main():
         risk_per_trade=float(portfolio.get("risk_per_trade", 0.005)),
         max_position_pct=float(portfolio.get("max_position_pct", 0.10)),
     )
+
 
     # 5) Initial equity log
     now_utc = datetime.now(timezone.utc)
