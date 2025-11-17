@@ -16,6 +16,9 @@ import yaml
 import csv as _csv
 import inspect
 import pandas as pd
+# Failsafe ברירת מחדל – כדי למנוע NameError בכל מצב
+equity_config = "auto"
+
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from bot.safety import guard_open
