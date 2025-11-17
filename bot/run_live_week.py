@@ -20,7 +20,8 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from bot.safety import guard_open
 # Failsafe ברירת מחדל – כדי למנוע NameError בכל מצב
-equity_config = "auto"
+equity_config = os.getenv("EQUITY_CONFIG", "auto")
+equity = 0.0
 
 try:
     from bot.monitor import start_heartbeat
