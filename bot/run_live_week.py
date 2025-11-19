@@ -202,7 +202,7 @@ def main():
         except Exception as e:
             print(f"[WARN] DB write_equity init failed: {e}")
 
-    # 6) Connectors + AUTO
+       # 6) Connectors + AUTO
     conns: list[tuple[dict, object]] = []
     live_connectors = cfg.get("live_connectors", []) or []
     for c in live_connectors:
@@ -222,12 +222,26 @@ def main():
             print(f"ℹ️ Unknown connector type '{ctype}' — skipping.")
             continue
 
+        # אתחול המחבר
         try:
             conn.init()
         except Exception as e:
             print(f"❌ init() failed for connector {c.get('name','?')}: {repr(e)}")
             continue
 
+        # טעינת מפתחות Bybit מה-ENV והזרקה ל-exchange
+        api_key = os.getenv("BYBIT_API_KEY")
+        api_secret = os.getenv("BYBIT_API_SECRET")
+        if api_key and api_secret:
+            try:
+                conn.exchange.apiKey = api_key
+                conn.exchange.secret = api_secret
+            except Exception as e:
+                print(f"[WARN] failed to set Bybit credentials on exchange: {e}")
+        else:
+            print("⚠️ BYBIT_API_KEY/BYBIT_API_SECRET not found in environment")
+
+        # טעינת השווקים מהבורסה
         try:
             markets = conn.exchange.load_markets()
         except Exception as e:
@@ -237,9 +251,8 @@ def main():
         requested_syms = list(c.get("symbols", []) or [])
         if "AUTO" in requested_syms:
             auto_syms = [
-                m for m,info in markets.items()
-                if info.get('type','spot') == 'spot'
-                and info.get('quote') == 'USDT'
+                m for m, info in markets.items()
+                if info.get('quote') == 'USDT'
                 and info.get('active', True)
             ][:50]  # מרחיבים עד 50 כדי להגדיל סיכוי
             cfg_syms = requested_syms + auto_syms
