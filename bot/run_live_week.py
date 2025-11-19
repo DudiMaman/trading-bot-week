@@ -18,7 +18,6 @@ import time
 import yaml
 import csv as _csv
 import inspect
-from typing import Optional, Tuple
 import pandas as pd
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -87,64 +86,37 @@ def determine_amount_step(market: dict) -> float:
 
 
 # ---------- NEW: helpers for live position size (SPOT + FUTURES) ----------
-def detect_market_type(exchange, symbol: str) -> str:
+def get_live_position_qty(conn, symbol: str, side: str):
     """
-    מנסה להבין אם הסימבול נסחר כ-SPOT או כ-FUTURES/CONTRACT לפי market info של ccxt.
-    מחזיר 'spot' או 'future'.
-    """
-    try:
-        market = exchange.market(symbol)
-    except Exception:
-        # ברירת מחדל שמרנית – מתייחסים כ-spot
-        return "spot"
-
-    if market.get("contract") or market.get("swap") or market.get("linear") or market.get("inverse"):
-        return "future"
-    if market.get("spot"):
-        return "spot"
-    # ברירת מחדל
-    return "spot"
-
-
-def get_live_position_qty(conn, symbol: str, side: str) -> Tuple[Optional[float], str]:
-    """
-    מחזיר (qty, market_type):
-    - qty: גודל פוזיציה אמיתי בבורסה (אם זמין), אחרת None
-    - market_type: 'spot' / 'future'
-    side: 'long' / 'short' ל-FUTURES; ב-SPOT מתעלמים.
+    מנסה לקרוא את גודל הפוזיציה האמיתי מהבורסה.
+    - קודם מנסה FUTURES דרך fetch_positions (long/short).
+    - אם לא נמצא/נכשל, מנסה SPOT דרך fetch_balance (כמות BASE).
+    מחזיר:
+      qty (float או None), market_type ("future"/"spot")
     """
     if conn is None or not hasattr(conn, "exchange"):
         return None, "spot"
 
     ex = conn.exchange
-    market_type = detect_market_type(ex, symbol)
 
-    if market_type == "future":
-        try:
-            positions = ex.fetch_positions([symbol])
-        except Exception:
-            return None, "future"
-
+    # קודם מנסים FUTURES
+    try:
+        positions = ex.fetch_positions([symbol])
         target_side = "long" if side == "long" else "short"
         for p in positions:
             if p.get("symbol") != symbol:
                 continue
-
             p_side = (p.get("side") or p.get("positionSide") or "").lower()
             if p_side and p_side != target_side:
                 continue
-
             raw = p.get("contracts") or p.get("size") or p.get("amount")
-            try:
-                qty = abs(float(raw))
-            except Exception:
+            if raw is None:
                 continue
-
+            qty = abs(float(raw))
             if qty > 0:
                 return qty, "future"
-
-        # לא נמצאה פוזיציה מתאימה
-        return 0.0, "future"
+    except Exception:
+        pass  # אם אין פוזיציות או זה לא FUTURES – ננסה SPOT
 
     # SPOT – בודקים כמות BASE ב-balance
     try:
@@ -159,20 +131,13 @@ def get_live_position_qty(conn, symbol: str, side: str) -> Tuple[Optional[float]
         return None, "spot"
 
 
-def compute_close_qty(
-    conn,
-    symbol: str,
-    side: str,
-    requested_qty: float,
-    fallback_qty: float,
-) -> Tuple[float, float]:
+def compute_close_qty(conn, symbol: str, side: str, requested_qty: float, fallback_qty: float):
     """
     מחשב כמה אפשר לסגור בפועל:
-    - מנסה לקרוא את הפוזיציה האמיתית בבורסה (SPOT/FUTURES).
-    - לא מבקש לסגור יותר ממה שבאמת יש.
+    - לא מבקש לסגור יותר ממה שבאמת יש (live position).
+    - אם אי אפשר לקרוא מהבורסה – משתמש ב-fallback (pos["qty"]).
     מחזיר:
-      close_qty: כמות לסגירה בפועל
-      live_qty: כמות שהייתה פתוחה לפני הסגירה (אם לא הצליח לקרוא – fallback).
+      close_qty, live_qty
     """
     if requested_qty <= 0:
         return 0.0, fallback_qty
@@ -625,7 +590,6 @@ def main():
                 (side == "long" and price >= pos["tp2"])
                 or (side == "short" and price <= pos["tp2"])
             ):
-                # משתמשים ב-pos["qty"] המעודכן + live check
                 requested_close_qty = pos["qty"] * tm.p2_pct
                 exit_side = "sell" if side == "long" else "buy"
 
@@ -928,7 +892,7 @@ def main():
         if db:
             try:
                 db.write_equity(
-                    {"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")]
+                    {"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")}
                 )
             except Exception as e:
                 print(f"[WARN] DB write_equity loop failed: {e}")
