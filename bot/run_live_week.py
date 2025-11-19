@@ -385,17 +385,28 @@ def main():
                     pos["sl"] = min(pos["sl"], entry)
                     pos["moved_to_be"] = True
 
-            if (not pos["tp1_done"]) and (
-                (side == "long" and price >= pos["tp1"]) or (side == "short" and price <= pos["tp1"])
-            ):
-                close_qty = qty * tm.p1_pct
-                pnl = (price - entry) * close_qty if side == "long" else (entry - price) * close_qty
-                equity += pnl
-                pos["qty"] = qty - close_qty
-                pos["tp1_done"] = True
-                rows_trades.append(
-                    [now_utc.isoformat(), key[0], key[1], "TP1", side, f"{price:.8f}", f"{close_qty:.8f}", f"{pnl:.2f}", f"{equity:.2f}"]
-                )
+           if (not pos["tp1_done"]) and (
+    (side == "long" and price >= pos["tp1"]) or (side == "short" and price <= pos["tp1"])
+):
+    close_qty = qty * tm.p1_pct
+
+    # שולחים פקודת יציאה אמיתית – צד הפוך, reduceOnly=True
+    exit_side = "sell" if side == "long" else "buy"
+    order_id = place_order(conn, key[1], exit_side, close_qty, reduce_only=True)
+    if not order_id:
+        # אם לא הצליח לצאת – לא נוגעים בפוזיציה הפנימית
+        print(f"[TP1] order failed for {key}")
+    else:
+        pnl = (price - entry) * close_qty if side == "long" else (entry - price) * close_qty
+        equity += pnl
+        pos["qty"] = qty - close_qty
+        pos["tp1_done"] = True
+
+        rows_trades.append(
+            [now_utc.isoformat(), key[0], key[1], "TP1", side,
+             f"{price:.8f}", f"{close_qty:.8f}", f"{pnl:.2f}", f"{equity:.2f}"]
+        )
+
 
             if (not pos["tp2_done"]) and (
                 (side == "long" and price >= pos["tp2"]) or (side == "short" and price <= pos["tp2"])
