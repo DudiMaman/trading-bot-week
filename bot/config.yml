@@ -22,6 +22,6 @@ trade_manager:
   max_bars_in_trade: 50
 
 portfolio:
-  equity0: auto
+  equity0: "auto"
   risk_per_trade: 0.03
   max_position_pct: 0.70
