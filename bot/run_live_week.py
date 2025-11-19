@@ -318,7 +318,7 @@ def main():
     portfolio = cfg.get("portfolio", {}) or {}
     equity_cfg = portfolio.get("equity0", "auto")
 
-    if isinstance(equity_cfg, str) and equity_cfg.lower() == "auto":
+        if isinstance(equity_cfg, str) and equity_cfg.lower() == "auto":
         api_key = os.getenv("BYBIT_API_KEY")
         api_secret = os.getenv("BYBIT_API_SECRET")
         equity = 0.0
@@ -332,17 +332,44 @@ def main():
                         "secret": api_secret,
                         "enableRateLimit": True,
                         "options": {
+                            # לא ננעלים רק על swap כאן
                             "defaultType": "swap",
                         },
                     }
                 )
-                balance = exchange.fetch_balance({"type": "UNIFIED"})
-                usdt = balance.get("USDT") or {}
-                equity = float(usdt.get("total") or usdt.get("free") or 0.0)
-                print(f"💰 Live Bybit equity (USDT): {equity}")
+
+                equity_unified = 0.0
+                equity_spot = 0.0
+
+                # ניסיון לקרוא Unified
+                try:
+                    bal_u = exchange.fetch_balance({"type": "UNIFIED"})
+                    usdt_u = bal_u.get("USDT") or {}
+                    equity_unified = float(
+                        usdt_u.get("total") or usdt_u.get("free") or 0.0
+                    )
+                except Exception as e_u:
+                    print(f"⚠️ fetch_balance UNIFIED נכשל: {e_u}")
+
+                # ניסיון לקרוא Spot
+                try:
+                    bal_s = exchange.fetch_balance()
+                    usdt_s = bal_s.get("USDT") or {}
+                    equity_spot = float(
+                        usdt_s.get("total") or usdt_s.get("free") or 0.0
+                    )
+                except Exception as e_s:
+                    print(f"⚠️ fetch_balance SPOT נכשל: {e_s}")
+
+                equity = max(equity_unified, equity_spot)
+                print(
+                    f"💰 Bybit equity – UNIFIED={equity_unified} USDT, "
+                    f"SPOT={equity_spot} USDT, used={equity}"
+                )
         except Exception as e:
             print(f"⚠️ כשל בשליפת יתרה חיה מבייביט, מתחיל עם 0. שגיאה: {e}")
             equity = 0.0
+
     else:
         try:
             equity = float(equity_cfg)
