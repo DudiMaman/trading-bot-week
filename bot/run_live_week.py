@@ -158,50 +158,46 @@ def main():
         print(f"⚠️ Ignoring unknown trade_manager keys: {unknown_t}")
     tm = TradeManager(**clean_t)
 
-       # 4) Portfolio
+    # 4) Portfolio – משיכת equity מבייביט כשמוגדר "auto"
     portfolio = cfg.get("portfolio", {}) or {}
-    equity = float(portfolio.get("equity", 100_000.0))
-    equity_config = portfolio.get("equity_config", "auto")
-    equity_config = os.getenv("EQUITY_CONFIG", equity_config)
+    equity_cfg = portfolio.get("equity0", "auto")
+    equity: float
 
-    if equity_config == "auto":
-        from bot.connectors.ccxt_connector import CCXTConnector
-
-        # לוקחים את המפתחות מה-ENV / .env
+    if isinstance(equity_cfg, str) and equity_cfg.lower() == "auto":
         api_key = os.getenv("BYBIT_API_KEY")
         api_secret = os.getenv("BYBIT_API_SECRET")
-
-        if not api_key or not api_secret:
-            raise RuntimeError("Missing BYBIT_API_KEY / BYBIT_API_SECRET for live equity auto-mode")
-
-        connector = CCXTConnector("bybit", paper=False, default_type="swap")
-        connector.init()
-
-        # מזריקים את המפתחות ישירות לאובייקט של ccxt
-        connector.exchange.apiKey = api_key
-        connector.exchange.secret = api_secret
-
-        balance = connector.exchange.fetch_balance({"type": "UNIFIED"})
-        equity = float(balance["USDT"]["free"])
-        print(f"💰 Equity auto-fetched from Bybit: {equity:.2f}")
+        equity = 0.0
+        try:
+            if not api_key or not api_secret:
+                print("⚠️ BYBIT_API_KEY/SECRET חסרים – מתחיל עם equity = 0")
+            else:
+                exchange = ccxt.bybit({
+                    "apiKey": api_key,
+                    "secret": api_secret,
+                    "enableRateLimit": True,
+                    "options": {
+                        "defaultType": "swap",
+                    },
+                })
+                balance = exchange.fetch_balance({"type": "UNIFIED"})
+                usdt = balance.get("USDT") or {}
+                equity = float(usdt.get("total") or usdt.get("free") or 0.0)
+                print(f"💰 Live Bybit equity (USDT): {equity}")
+        except Exception as e:
+            print(f"⚠️ כשל בשליפת יתרה חיה מבייביט, מתחיל עם 0. שגיאה: {e}")
+            equity = 0.0
     else:
-        equity = float(equity_config)
+        try:
+            equity = float(equity_cfg)
+        except Exception:
+            equity = 0.0
 
     rm = RiskManager(
         equity=equity,
-        risk_per_trade=float(portfolio.get("risk_per_trade", 0.005)),
-        max_position_pct=float(portfolio.get("max_position_pct", 0.10)),
+        risk_per_trade=float(portfolio.get("risk_per_trade", 0.03)),
+        max_position_pct=float(portfolio.get("max_position_pct", 0.70)),
     )
 
-
-    # 5) Initial equity log
-    now_utc = datetime.now(timezone.utc)
-    write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
-    if db:
-        try:
-            db.write_equity({"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")})
-        except Exception as e:
-            print(f"[WARN] DB write_equity init failed: {e}")
 
        # 6) Connectors + AUTO
     conns: list[tuple[dict, object]] = []
