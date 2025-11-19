@@ -18,6 +18,7 @@ import time
 import yaml
 import csv as _csv
 import inspect
+from typing import Optional, Tuple
 import pandas as pd
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -83,6 +84,113 @@ def determine_amount_step(market: dict) -> float:
         lim_amt = (market or {}).get("limits", {}).get("amount", {}) or {}
         step = float(lim_amt.get("step") or step)
     return max(step, 1e-12)
+
+
+# ---------- NEW: helpers for live position size (SPOT + FUTURES) ----------
+def detect_market_type(exchange, symbol: str) -> str:
+    """
+    מנסה להבין אם הסימבול נסחר כ-SPOT או כ-FUTURES/CONTRACT לפי market info של ccxt.
+    מחזיר 'spot' או 'future'.
+    """
+    try:
+        market = exchange.market(symbol)
+    except Exception:
+        # ברירת מחדל שמרנית – מתייחסים כ-spot
+        return "spot"
+
+    if market.get("contract") or market.get("swap") or market.get("linear") or market.get("inverse"):
+        return "future"
+    if market.get("spot"):
+        return "spot"
+    # ברירת מחדל
+    return "spot"
+
+
+def get_live_position_qty(conn, symbol: str, side: str) -> Tuple[Optional[float], str]:
+    """
+    מחזיר (qty, market_type):
+    - qty: גודל פוזיציה אמיתי בבורסה (אם זמין), אחרת None
+    - market_type: 'spot' / 'future'
+    side: 'long' / 'short' ל-FUTURES; ב-SPOT מתעלמים.
+    """
+    if conn is None or not hasattr(conn, "exchange"):
+        return None, "spot"
+
+    ex = conn.exchange
+    market_type = detect_market_type(ex, symbol)
+
+    if market_type == "future":
+        try:
+            positions = ex.fetch_positions([symbol])
+        except Exception:
+            return None, "future"
+
+        target_side = "long" if side == "long" else "short"
+        for p in positions:
+            if p.get("symbol") != symbol:
+                continue
+
+            p_side = (p.get("side") or p.get("positionSide") or "").lower()
+            if p_side and p_side != target_side:
+                continue
+
+            raw = p.get("contracts") or p.get("size") or p.get("amount")
+            try:
+                qty = abs(float(raw))
+            except Exception:
+                continue
+
+            if qty > 0:
+                return qty, "future"
+
+        # לא נמצאה פוזיציה מתאימה
+        return 0.0, "future"
+
+    # SPOT – בודקים כמות BASE ב-balance
+    try:
+        market = ex.market(symbol)
+        base = market.get("base") or symbol.split("/")[0]
+        balance = ex.fetch_balance()
+        base_info = balance.get(base) or {}
+        raw = base_info.get("free") or base_info.get("total") or 0
+        qty = float(raw)
+        return max(qty, 0.0), "spot"
+    except Exception:
+        return None, "spot"
+
+
+def compute_close_qty(
+    conn,
+    symbol: str,
+    side: str,
+    requested_qty: float,
+    fallback_qty: float,
+) -> Tuple[float, float]:
+    """
+    מחשב כמה אפשר לסגור בפועל:
+    - מנסה לקרוא את הפוזיציה האמיתית בבורסה (SPOT/FUTURES).
+    - לא מבקש לסגור יותר ממה שבאמת יש.
+    מחזיר:
+      close_qty: כמות לסגירה בפועל
+      live_qty: כמות שהייתה פתוחה לפני הסגירה (אם לא הצליח לקרוא – fallback).
+    """
+    if requested_qty <= 0:
+        return 0.0, fallback_qty
+
+    live_qty, _ = get_live_position_qty(conn, symbol, side)
+    if live_qty is None:
+        live_qty = fallback_qty
+
+    live_qty = max(live_qty or 0.0, 0.0)
+    if live_qty <= 0:
+        return 0.0, live_qty
+
+    close_qty = min(requested_qty, live_qty)
+    if close_qty <= 0:
+        return 0.0, live_qty
+
+    return close_qty, live_qty
+# --------------------------------------------------------------------------
 
 
 def place_order(conn, symbol: str, side: str, qty: float, reduce_only: bool = False):
@@ -465,101 +573,141 @@ def main():
                 (side == "long" and price >= pos["tp1"])
                 or (side == "short" and price <= pos["tp1"])
             ):
-                close_qty = qty * tm.p1_pct
-
-                # real exit: reverse side, reduceOnly=True
+                requested_close_qty = qty * tm.p1_pct
                 exit_side = "sell" if side == "long" else "buy"
-                if conn is not None and close_qty > 0:
-                    order_id = place_order(conn, key[1], exit_side, close_qty, reduce_only=True)
-                else:
-                    order_id = None
 
-                if not order_id:
-                    print(f"[TP1] order failed for {key}")
-                else:
-                    pnl = (
-                        (price - entry) * close_qty
-                        if side == "long"
-                        else (entry - price) * close_qty
-                    )
-                    equity += pnl
-                    pos["qty"] = qty - close_qty
-                    pos["tp1_done"] = True
+                close_qty, live_qty = compute_close_qty(
+                    conn, key[1], side, requested_close_qty, pos["qty"]
+                )
 
-                    append_trade(
-                        rows_trades,
-                        now_utc,
-                        key[0],
-                        key[1],
-                        "TP1",
-                        side,
-                        price,
-                        close_qty,
-                        pnl,
-                        equity,
-                    )
+                if close_qty <= 0:
+                    print(f"[TP1] no qty available to close for {key}")
+                else:
+                    if conn is not None:
+                        order_id = place_order(
+                            conn, key[1], exit_side, close_qty, reduce_only=True
+                        )
+                    else:
+                        order_id = None
+
+                    if not order_id:
+                        print(f"[TP1] order failed for {key}")
+                    else:
+                        pnl = (
+                            (price - entry) * close_qty
+                            if side == "long"
+                            else (entry - price) * close_qty
+                        )
+                        equity += pnl
+
+                        new_qty = max(
+                            0.0,
+                            (live_qty if live_qty is not None else pos["qty"]) - close_qty,
+                        )
+                        pos["qty"] = new_qty
+                        pos["tp1_done"] = True
+
+                        append_trade(
+                            rows_trades,
+                            now_utc,
+                            key[0],
+                            key[1],
+                            "TP1",
+                            side,
+                            price,
+                            close_qty,
+                            pnl,
+                            equity,
+                        )
 
             # ---- TP2 (partial close / rest) ----
             if (not pos["tp2_done"]) and (
                 (side == "long" and price >= pos["tp2"])
                 or (side == "short" and price <= pos["tp2"])
             ):
-                close_qty = pos["qty"] * tm.p2_pct
-
+                # משתמשים ב-pos["qty"] המעודכן + live check
+                requested_close_qty = pos["qty"] * tm.p2_pct
                 exit_side = "sell" if side == "long" else "buy"
-                if conn is not None and close_qty > 0:
-                    order_id = place_order(conn, key[1], exit_side, close_qty, reduce_only=True)
-                else:
-                    order_id = None
 
-                if not order_id:
-                    print(f"[TP2] order failed for {key}")
-                else:
-                    pnl = (
-                        (price - entry) * close_qty
-                        if side == "long"
-                        else (entry - price) * close_qty
-                    )
-                    equity += pnl
-                    pos["qty"] = pos["qty"] - close_qty
-                    pos["tp2_done"] = True
+                close_qty, live_qty = compute_close_qty(
+                    conn, key[1], side, requested_close_qty, pos["qty"]
+                )
 
-                    append_trade(
-                        rows_trades,
-                        now_utc,
-                        key[0],
-                        key[1],
-                        "TP2",
-                        side,
-                        price,
-                        close_qty,
-                        pnl,
-                        equity,
-                    )
+                if close_qty <= 0:
+                    print(f"[TP2] no qty available to close for {key}")
+                else:
+                    if conn is not None:
+                        order_id = place_order(
+                            conn, key[1], exit_side, close_qty, reduce_only=True
+                        )
+                    else:
+                        order_id = None
+
+                    if not order_id:
+                        print(f"[TP2] order failed for {key}")
+                    else:
+                        pnl = (
+                            (price - entry) * close_qty
+                            if side == "long"
+                            else (entry - price) * close_qty
+                        )
+                        equity += pnl
+
+                        new_qty = max(
+                            0.0,
+                            (live_qty if live_qty is not None else pos["qty"]) - close_qty,
+                        )
+                        pos["qty"] = new_qty
+                        pos["tp2_done"] = True
+
+                        append_trade(
+                            rows_trades,
+                            now_utc,
+                            key[0],
+                            key[1],
+                            "TP2",
+                            side,
+                            price,
+                            close_qty,
+                            pnl,
+                            equity,
+                        )
 
             # ---- SL (stop-loss exit of all remaining qty) ----
             if (side == "long" and price <= pos["sl"]) or (
                 side == "short" and price >= pos["sl"]
             ):
-                if pos["qty"] > 0 and conn is not None:
-                    exit_side = "sell" if side == "long" else "buy"
-                    order_id = place_order(
-                        conn, key[1], exit_side, pos["qty"], reduce_only=True
-                    )
-                else:
+                exit_side = "sell" if side == "long" else "buy"
+                requested_close_qty = pos["qty"]
+
+                close_qty, live_qty = compute_close_qty(
+                    conn, key[1], side, requested_close_qty, pos["qty"]
+                )
+
+                if close_qty <= 0 or conn is None:
+                    print(f"[SL] no qty available to close for {key}")
                     order_id = None
+                else:
+                    order_id = place_order(
+                        conn, key[1], exit_side, close_qty, reduce_only=True
+                    )
 
                 if not order_id:
                     print(f"[SL] order failed for {key}")
                 else:
                     price_exit = pos["sl"]
-                    close_qty = pos["qty"]
                     pnl = (
                         (price_exit - entry) * close_qty
                         if side == "long"
                         else (entry - price_exit) * close_qty
                     )
                     equity += pnl
+
+                    new_qty = max(
+                        0.0,
+                        (live_qty if live_qty is not None else pos["qty"]) - close_qty,
+                    )
+                    pos["qty"] = new_qty
 
                     append_trade(
                         rows_trades,
@@ -579,24 +727,36 @@ def main():
             # ---- TIME exit (if max bars reached and still open) ----
             pos["bars"] += 1
             if pos["bars"] >= tm.max_bars_in_trade and not pos["tp2_done"]:
-                if pos["qty"] > 0 and conn is not None:
-                    exit_side = "sell" if side == "long" else "buy"
-                    order_id = place_order(
-                        conn, key[1], exit_side, pos["qty"], reduce_only=True
-                    )
-                else:
+                exit_side = "sell" if side == "long" else "buy"
+                requested_close_qty = pos["qty"]
+
+                close_qty, live_qty = compute_close_qty(
+                    conn, key[1], side, requested_close_qty, pos["qty"]
+                )
+
+                if close_qty <= 0 or conn is None:
+                    print(f"[TIME] no qty available to close for {key}")
                     order_id = None
+                else:
+                    order_id = place_order(
+                        conn, key[1], exit_side, close_qty, reduce_only=True
+                    )
 
                 if not order_id:
                     print(f"[TIME] order failed for {key}")
                 else:
-                    close_qty = pos["qty"]
                     pnl = (
                         (price - entry) * close_qty
                         if side == "long"
                         else (entry - price) * close_qty
                     )
                     equity += pnl
+
+                    new_qty = max(
+                        0.0,
+                        (live_qty if live_qty is not None else pos["qty"]) - close_qty,
+                    )
+                    pos["qty"] = new_qty
 
                     append_trade(
                         rows_trades,
@@ -768,7 +928,7 @@ def main():
         if db:
             try:
                 db.write_equity(
-                    {"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")}
+                    {"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")]
                 )
             except Exception as e:
                 print(f"[WARN] DB write_equity loop failed: {e}")
