@@ -6,6 +6,9 @@
 # - Valid symbol filtering + min-qty/min-notional/precision
 # - Fallback signal logic (Donchian breakout) if strategy yields no signals
 # - Robust try/except and dual logging (CSV + optional Postgres)
+#
+# ⚠️ WARNING: this version sends REAL MARKET ORDERS to Bybit using your API keys.
+# Use at your own risk and only with money you can afford to lose.
 # ------------------------------------------------------------
 
 import os
@@ -80,6 +83,43 @@ def determine_amount_step(market: dict) -> float:
         lim_amt = (market or {}).get("limits", {}).get("amount", {}) or {}
         step = float(lim_amt.get("step") or step)
     return max(step, 1e-12)
+
+
+def place_order(conn, symbol: str, side: str, qty: float, reduce_only: bool = False):
+    """
+    מבצע פקודת מרקט אמיתית בבייביט דרך CCXT.
+    side: "buy" / "sell"
+    אם reduce_only=True – מיועד ליציאות (TP/SL/TIME) בפיוצ'רס.
+    מחזיר order_id אם הצליח, אחרת None.
+    """
+    try:
+        from ccxt.base.errors import ExchangeError
+    except Exception:
+        ExchangeError = Exception
+
+    try:
+        params = {}
+        if reduce_only:
+            params["reduceOnly"] = True
+
+        order = conn.exchange.create_order(
+            symbol=symbol,
+            type="market",
+            side=side,
+            amount=qty,
+            price=None,
+            params=params,
+        )
+        order_id = order.get("id")
+        print(f"[ORDER OK] {symbol} {side} {qty} => {order_id}")
+        return order_id
+
+    except ExchangeError as e:
+        print(f"[ORDER ERROR] ExchangeError on {symbol} {side} {qty}: {e}")
+    except Exception as e:
+        print(f"[ORDER ERROR] {symbol} {side} {qty}: {repr(e)}")
+
+    return None
 
 
 def attach_atr(ltf_df: pd.DataFrame) -> pd.Series:
@@ -397,10 +437,11 @@ def main():
 
             price = float(row["close"])
             atr_now = float(row["atr"]) if pd.notna(row["atr"]) else None
-            side = pos["side"]
+            side = pos["side"]          # "long" / "short"
             entry = pos["entry"]
             qty = pos["qty"]
             R = pos["R"]
+            conn = pos.get("conn")      # CCXTConnector instance
 
             # trailing SL by ATR
             if atr_now:
@@ -419,118 +460,163 @@ def main():
                     pos["sl"] = min(pos["sl"], entry)
                     pos["moved_to_be"] = True
 
-            # TP1
+            # ---- TP1 (partial close) ----
             if (not pos["tp1_done"]) and (
                 (side == "long" and price >= pos["tp1"])
                 or (side == "short" and price <= pos["tp1"])
             ):
                 close_qty = qty * tm.p1_pct
-                pnl = (
-                    (price - entry) * close_qty
-                    if side == "long"
-                    else (entry - price) * close_qty
-                )
-                equity += pnl
-                pos["qty"] = qty - close_qty
-                pos["tp1_done"] = True
 
-                append_trade(
-                    rows_trades,
-                    now_utc,
-                    key[0],
-                    key[1],
-                    "TP1",
-                    side,
-                    price,
-                    close_qty,
-                    pnl,
-                    equity,
-                )
+                # real exit: reverse side, reduceOnly=True
+                exit_side = "sell" if side == "long" else "buy"
+                if conn is not None and close_qty > 0:
+                    order_id = place_order(conn, key[1], exit_side, close_qty, reduce_only=True)
+                else:
+                    order_id = None
 
-            # TP2
+                if not order_id:
+                    print(f"[TP1] order failed for {key}")
+                else:
+                    pnl = (
+                        (price - entry) * close_qty
+                        if side == "long"
+                        else (entry - price) * close_qty
+                    )
+                    equity += pnl
+                    pos["qty"] = qty - close_qty
+                    pos["tp1_done"] = True
+
+                    append_trade(
+                        rows_trades,
+                        now_utc,
+                        key[0],
+                        key[1],
+                        "TP1",
+                        side,
+                        price,
+                        close_qty,
+                        pnl,
+                        equity,
+                    )
+
+            # ---- TP2 (partial close / rest) ----
             if (not pos["tp2_done"]) and (
                 (side == "long" and price >= pos["tp2"])
                 or (side == "short" and price <= pos["tp2"])
             ):
                 close_qty = pos["qty"] * tm.p2_pct
-                pnl = (
-                    (price - entry) * close_qty
-                    if side == "long"
-                    else (entry - price) * close_qty
-                )
-                equity += pnl
-                pos["qty"] = pos["qty"] - close_qty
-                pos["tp2_done"] = True
 
-                append_trade(
-                    rows_trades,
-                    now_utc,
-                    key[0],
-                    key[1],
-                    "TP2",
-                    side,
-                    price,
-                    close_qty,
-                    pnl,
-                    equity,
-                )
+                exit_side = "sell" if side == "long" else "buy"
+                if conn is not None and close_qty > 0:
+                    order_id = place_order(conn, key[1], exit_side, close_qty, reduce_only=True)
+                else:
+                    order_id = None
 
-            # SL
+                if not order_id:
+                    print(f"[TP2] order failed for {key}")
+                else:
+                    pnl = (
+                        (price - entry) * close_qty
+                        if side == "long"
+                        else (entry - price) * close_qty
+                    )
+                    equity += pnl
+                    pos["qty"] = pos["qty"] - close_qty
+                    pos["tp2_done"] = True
+
+                    append_trade(
+                        rows_trades,
+                        now_utc,
+                        key[0],
+                        key[1],
+                        "TP2",
+                        side,
+                        price,
+                        close_qty,
+                        pnl,
+                        equity,
+                    )
+
+            # ---- SL (stop-loss exit of all remaining qty) ----
             if (side == "long" and price <= pos["sl"]) or (
                 side == "short" and price >= pos["sl"]
             ):
-                price_exit = pos["sl"]
-                pnl = (
-                    (price_exit - entry) * pos["qty"]
-                    if side == "long"
-                    else (entry - price_exit) * pos["qty"]
-                )
-                equity += pnl
+                if pos["qty"] > 0 and conn is not None:
+                    exit_side = "sell" if side == "long" else "buy"
+                    order_id = place_order(
+                        conn, key[1], exit_side, pos["qty"], reduce_only=True
+                    )
+                else:
+                    order_id = None
 
-                append_trade(
-                    rows_trades,
-                    now_utc,
-                    key[0],
-                    key[1],
-                    "SL",
-                    side,
-                    price_exit,
-                    pos["qty"],
-                    pnl,
-                    equity,
-                )
+                if not order_id:
+                    print(f"[SL] order failed for {key}")
+                else:
+                    price_exit = pos["sl"]
+                    close_qty = pos["qty"]
+                    pnl = (
+                        (price_exit - entry) * close_qty
+                        if side == "long"
+                        else (entry - price_exit) * close_qty
+                    )
+                    equity += pnl
 
-                to_close.append(key)
+                    append_trade(
+                        rows_trades,
+                        now_utc,
+                        key[0],
+                        key[1],
+                        "SL",
+                        side,
+                        price_exit,
+                        close_qty,
+                        pnl,
+                        equity,
+                    )
 
-            # TIME exit
+                    to_close.append(key)
+
+            # ---- TIME exit (if max bars reached and still open) ----
             pos["bars"] += 1
             if pos["bars"] >= tm.max_bars_in_trade and not pos["tp2_done"]:
-                pnl = (
-                    (price - entry) * pos["qty"]
-                    if side == "long"
-                    else (entry - price) * pos["qty"]
-                )
-                equity += pnl
+                if pos["qty"] > 0 and conn is not None:
+                    exit_side = "sell" if side == "long" else "buy"
+                    order_id = place_order(
+                        conn, key[1], exit_side, pos["qty"], reduce_only=True
+                    )
+                else:
+                    order_id = None
 
-                append_trade(
-                    rows_trades,
-                    now_utc,
-                    key[0],
-                    key[1],
-                    "TIME",
-                    side,
-                    price,
-                    pos["qty"],
-                    pnl,
-                    equity,
-                )
+                if not order_id:
+                    print(f"[TIME] order failed for {key}")
+                else:
+                    close_qty = pos["qty"]
+                    pnl = (
+                        (price - entry) * close_qty
+                        if side == "long"
+                        else (entry - price) * close_qty
+                    )
+                    equity += pnl
 
-                to_close.append(key)
+                    append_trade(
+                        rows_trades,
+                        now_utc,
+                        key[0],
+                        key[1],
+                        "TIME",
+                        side,
+                        price,
+                        close_qty,
+                        pnl,
+                        equity,
+                    )
+
+                    to_close.append(key)
 
         for key in to_close:
             open_positions.pop(key, None)
 
-        # Entries
+        # Entries (open new positions – REAL MARKET ORDERS)
         for c_cfg, conn in conns:
             for sym in c_cfg.get("symbols", []):
                 key = (c_cfg.get("name", "ccxt"), sym)
@@ -599,6 +685,13 @@ def main():
                     else price - tm.r2_R * R
                 )
 
+                # REAL entry order
+                order_side = "buy" if side == "long" else "sell"
+                order_id = place_order(conn, sym, order_side, qty, reduce_only=False)
+                if not order_id:
+                    print(f"[ENTER] order failed for {key}")
+                    continue
+
                 open_positions[key] = {
                     "side": side,
                     "entry": price,
@@ -611,6 +704,8 @@ def main():
                     "tp1_done": False,
                     "tp2_done": False,
                     "moved_to_be": False,
+                    "conn": conn,
+                    "entry_order_id": order_id,
                 }
 
                 append_trade(
