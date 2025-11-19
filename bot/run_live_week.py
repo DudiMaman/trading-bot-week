@@ -80,6 +80,38 @@ def determine_amount_step(market: dict) -> float:
         step = float(lim_amt.get('step') or step)
     return max(step, 1e-12)
 
+def place_order(conn, symbol: str, side: str, qty: float, reduce_only: bool = False):
+    """
+    מבצע פקודת מרקט אמיתית בבייביט דרך CCXT.
+    מחזיר order_id אם הצליח, אחרת None.
+    """
+    from ccxt.base.errors import ExchangeError
+
+    try:
+        params = {}
+        if reduce_only:
+            params["reduceOnly"] = True  # חשוב ליציאות בפיוצ'רס
+
+        # פקודת מרקט – הכניסה / היציאה בפועל
+        order = conn.exchange.create_order(
+            symbol=symbol,
+            type="market",
+            side=side,
+            amount=qty,
+            price=None,
+            params=params,
+        )
+        order_id = order.get("id")
+        print(f"[ORDER OK] {symbol} {side} {qty} => {order_id}")
+        return order_id
+
+    except ExchangeError as e:
+        print(f"[ORDER ERROR] ExchangeError on {symbol} {side} {qty}: {e}")
+    except Exception as e:
+        print(f"[ORDER ERROR] {symbol} {side} {qty}: {repr(e)}")
+
+    return None
+
 def attach_atr(ltf_df: pd.DataFrame) -> pd.Series:
     return calc_atr(ltf_df, 14)
 
