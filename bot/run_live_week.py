@@ -487,22 +487,33 @@ def main():
                 tp1 = price + tm.r1_R * R if side == "long" else price - tm.r1_R * R
                 tp2 = price + tm.r2_R * R if side == "long" else price - tm.r2_R * R
 
-                open_positions[key] = {
-                    "side": side,
-                    "entry": price,
-                    "sl": sl,
-                    "tp1": tp1,
-                    "tp2": tp2,
-                    "qty": qty,
-                    "R": R,
-                    "bars": 0,
-                    "tp1_done": False,
-                    "tp2_done": False,
-                    "moved_to_be": False,
-                }
-                rows_trades.append(
-                    [now_utc.isoformat(), key[0], key[1], "ENTER", side, f"{price:.8f}", f"{qty:.8f}", "", f"{equity:.2f}"]
-                )
+# קודם כל מנסים לבצע פקודה אמיתית בבייביט
+order_id = place_order(conn, sym, side, qty, reduce_only=False)
+if not order_id:
+    # אם הפקודה נכשלה – לא פותחים פוזיציה ולא רושמים טרייד
+    continue
+
+# רק אם הצליח – רושמים פוזיציה פנימית
+open_positions[key] = {
+    "side": side,
+    "entry": price,
+    "sl": sl,
+    "tp1": tp1,
+    "tp2": tp2,
+    "qty": qty,
+    "R": R,
+    "bars": 0,
+    "tp1_done": False,
+    "tp2_done": False,
+    "moved_to_be": False,
+    "entry_order_id": order_id,
+}
+
+rows_trades.append(
+    [now_utc.isoformat(), key[0], key[1], "ENTER", side,
+     f"{price:.8f}", f"{qty:.8f}", "", f"{equity:.2f}"]
+)
+
 
         if rows_trades:
             write_csv(TRADES_CSV, ["time", "connector", "symbol", "type", "side", "price", "qty", "pnl", "equity"], rows_trades)
