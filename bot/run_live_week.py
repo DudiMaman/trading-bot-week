@@ -18,6 +18,7 @@ import inspect
 import pandas as pd
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+import ccxt
 from bot.safety import guard_open
 # Failsafe ברירת מחדל – כדי למנוע NameError בכל מצב
 equity_config = os.getenv("EQUITY_CONFIG", "auto")
