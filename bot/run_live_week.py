@@ -616,10 +616,27 @@ def main():
         for key in to_close:
             open_positions.pop(key, None)
 
+        # ---- Portfolio exposure (notional) & remaining capacity ----
+        portfolio_notional = 0.0
+        for key2, pos2 in open_positions.items():
+            row2 = snapshots.get(key2)
+            if row2 is None:
+                continue
+            price_now = float(row2["close"])
+            portfolio_notional += pos2["qty"] * price_now
+
+        max_portfolio_notional = equity * rm.max_position_pct
+        remaining_notional = max(0.0, max_portfolio_notional - portfolio_notional)
+
         # Entries (open new positions – REAL MARKET ORDERS)
         for c_cfg, conn in conns:
             for sym in c_cfg.get("symbols", []):
                 key = (c_cfg.get("name", "ccxt"), sym)
+
+                # אם כבר אין תקציב חשיפה – לא פותחים פוזיציות חדשות
+                if remaining_notional <= 0:
+                    continue
+
                 if key in open_positions:
                     continue
                 if cooldowns.get(key, 0) > 0:
@@ -658,10 +675,16 @@ def main():
                 min_qty = (lims.get("amount") or {}).get("min")
                 min_cost = (lims.get("cost") or {}).get("min")
 
+                # sizing לפי:
+                # 1) סיכון לעסקה
+                # 2) תקרת חשיפה כללית
+                # 3) התקציב הפנוי כרגע (remaining_notional)
                 qty_risk = (equity * rm.risk_per_trade) / max(R, 1e-12)
-                qty_cap = (equity * rm.max_position_pct) / max(price, 1e-9)
-                qty = max(0.0, min(qty_risk, qty_cap))
-                qty = round_step(qty, step)
+                qty_cap_equity = (equity * rm.max_position_pct) / max(price, 1e-9)
+                qty_cap_remaining = remaining_notional / max(price, 1e-9)
+
+                qty_raw = max(0.0, min(qty_risk, qty_cap_equity, qty_cap_remaining))
+                qty = round_step(qty_raw, step)
 
                 if (min_qty is not None) and (qty < float(min_qty)):
                     qty = round_step(float(min_qty), step)
@@ -691,6 +714,10 @@ def main():
                 if not order_id:
                     print(f"[ENTER] order failed for {key}")
                     continue
+
+                # מעדכנים את התקציב הפנוי לפי הנומינל של הטרייד החדש
+                entry_notional = qty * price
+                remaining_notional = max(0.0, remaining_notional - entry_notional)
 
                 open_positions[key] = {
                     "side": side,
