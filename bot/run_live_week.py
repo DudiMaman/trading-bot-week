@@ -9,7 +9,6 @@
 # ------------------------------------------------------------
 
 import os
-LOG_PAPER_TRADES = os.getenv("LOG_PAPER_TRADES", "false").lower() == "true"
 import sys
 import math
 import time
