@@ -1,7 +1,8 @@
 from bot.connectors.base import BaseConnector
 import ccxt
 import pandas as pd
-
+from dotenv import load_dotenv 
+import os                  
 
 class CCXTConnector(BaseConnector):
     def __init__(self, exchange_id, paper=True, default_type='spot'):
