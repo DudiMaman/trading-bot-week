@@ -314,11 +314,11 @@ def main():
         print(f"⚠️ Ignoring unknown trade_manager keys: {unknown_t}")
     tm = TradeManager(**clean_t)
 
-    # 4) Portfolio – משיכת equity מבייביט כשמוגדר "auto"
+       # 4) Portfolio – משיכת equity מבייביט כשמוגדר "auto"
     portfolio = cfg.get("portfolio", {}) or {}
     equity_cfg = portfolio.get("equity0", "auto")
 
-        if isinstance(equity_cfg, str) and equity_cfg.lower() == "auto":
+    if isinstance(equity_cfg, str) and equity_cfg.lower() == "auto":
         api_key = os.getenv("BYBIT_API_KEY")
         api_secret = os.getenv("BYBIT_API_SECRET")
         equity = 0.0
@@ -332,7 +332,6 @@ def main():
                         "secret": api_secret,
                         "enableRateLimit": True,
                         "options": {
-                            # לא ננעלים רק על swap כאן
                             "defaultType": "swap",
                         },
                     }
@@ -369,7 +368,6 @@ def main():
         except Exception as e:
             print(f"⚠️ כשל בשליפת יתרה חיה מבייביט, מתחיל עם 0. שגיאה: {e}")
             equity = 0.0
-
     else:
         try:
             equity = float(equity_cfg)
