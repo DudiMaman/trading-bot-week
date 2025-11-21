@@ -1,6 +1,7 @@
 # bot/db_writer.py
 import os
 from datetime import datetime, timezone
+from typing import Any, Mapping
 
 """
 DB helper עם fallback:
@@ -17,12 +18,15 @@ def _as_bool(v):
         return False
     return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
+
 _IS_TESTNET = _as_bool(os.getenv("BYBIT_TESTNET")) or _as_bool(os.getenv("TESTNET"))
 # ניתן לעקוף ידנית דרך ENV: CONNECTOR_LABEL=bybit
 _CONNECTOR_LABEL = os.getenv("CONNECTOR_LABEL") or ("bybit_testnet" if _IS_TESTNET else "bybit")
 
+
 def connector_label() -> str:
     return _CONNECTOR_LABEL
+
 
 def _normalize_trade_rows(rows):
     """
@@ -34,17 +38,19 @@ def _normalize_trade_rows(rows):
     out = []
     for r in rows:
         if isinstance(r, dict):
-            out.append((
-                r.get("time"),
-                connector_label(),
-                r.get("symbol"),
-                r.get("type"),
-                r.get("side"),
-                r.get("price"),
-                r.get("qty"),
-                r.get("pnl"),
-                r.get("equity"),
-            ))
+            out.append(
+                (
+                    r.get("time"),
+                    connector_label(),
+                    r.get("symbol"),
+                    r.get("type"),
+                    r.get("side"),
+                    r.get("price"),
+                    r.get("qty"),
+                    r.get("pnl"),
+                    r.get("equity"),
+                )
+            )
         else:
             # tuple/list
             lst = list(r)
@@ -54,6 +60,33 @@ def _normalize_trade_rows(rows):
             lst[1] = connector_label()
             out.append(tuple(lst))
     return out
+
+
+def _resolve_equity_value(e: Mapping[str, Any]) -> float:
+    """
+    מקבל dict בסגנון {"time": ..., "equity": ...} שמגיע מהבוט,
+    ומחזיר equity לשמירה ב-DB.
+
+    ברירת המחדל: מנסה להביא totalEquity חי מ-Bybit (באמצעות bot/live_equity.py).
+    אם יש תקלה / אין מודול – נופל חזרה לערך שמגיע מהאירוע עצמו.
+    """
+    try:
+        # import דינמי כדי לא להפיל את המודול אם live_equity לא קיים עדיין
+        from .live_equity import get_live_total_equity
+
+        live_equity = float(get_live_total_equity())
+        print(
+            f"[DB] overriding payload equity={e.get('equity')} "
+            f"with live Bybit totalEquity={live_equity}"
+        )
+        return live_equity
+    except Exception as err:
+        payload_equity = float(e["equity"])
+        print(
+            f"[DB] live_equity fallback to payload equity={payload_equity}. "
+            f"Reason: {err}"
+        )
+        return payload_equity
 
 
 # -------------------------
@@ -100,7 +133,8 @@ def _make_psycopg_db(conn_str):
 
         def ensure_schema(self):
             with self.conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     create table if not exists trades(
                       time timestamptz not null,
                       connector text,
@@ -112,22 +146,29 @@ def _make_psycopg_db(conn_str):
                       pnl double precision,
                       equity double precision
                     );
-                """)
-                cur.execute("""
+                """
+                )
+                cur.execute(
+                    """
                     create table if not exists equity_curve(
                       time timestamptz primary key,
                       equity double precision
                     );
-                """)
-                cur.execute("""
+                """
+                )
+                cur.execute(
+                    """
                     create table if not exists bot_state(
                       id int primary key default 1,
                       state text not null default 'RUNNING',
                       updated_at timestamptz not null default now()
                     );
-                """)
+                """
+                )
                 # ודא שקיימת שורה יחידה
-                cur.execute("insert into bot_state (id) values (1) on conflict (id) do nothing;")
+                cur.execute(
+                    "insert into bot_state (id) values (1) on conflict (id) do nothing;"
+                )
 
         def get_state(self) -> str:
             with self.conn.cursor() as cur:
@@ -140,7 +181,7 @@ def _make_psycopg_db(conn_str):
                 cur.execute(
                     "insert into bot_state (id, state, updated_at) values (1, %s, now()) "
                     "on conflict (id) do update set state=excluded.state, updated_at=now();",
-                    (state,)
+                    (state,),
                 )
 
         def write_trades(self, rows):
@@ -155,15 +196,16 @@ def _make_psycopg_db(conn_str):
                     values
                       (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    normalized
+                    normalized,
                 )
 
         def write_equity(self, e):
+            equity_value = _resolve_equity_value(e)
             with self.conn.cursor() as cur:
                 cur.execute(
                     "insert into equity_curve (time, equity) values (%s, %s) "
                     "on conflict (time) do update set equity=excluded.equity;",
-                    (e["time"], e["equity"])
+                    (e["time"], equity_value),
                 )
 
         def close(self):
@@ -189,7 +231,8 @@ def _make_psycopg2_db(conn_str):
 
         def ensure_schema(self):
             with self.conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     create table if not exists trades(
                       time timestamptz not null,
                       connector text,
@@ -201,21 +244,28 @@ def _make_psycopg2_db(conn_str):
                       pnl double precision,
                       equity double precision
                     );
-                """)
-                cur.execute("""
+                """
+                )
+                cur.execute(
+                    """
                     create table if not exists equity_curve(
                       time timestamptz primary key,
                       equity double precision
                     );
-                """)
-                cur.execute("""
+                """
+                )
+                cur.execute(
+                    """
                     create table if not exists bot_state(
                       id int primary key default 1,
                       state text not null default 'RUNNING',
                       updated_at timestamptz not null default now()
                     );
-                """)
-                cur.execute("insert into bot_state (id) values (1) on conflict (id) do nothing;")
+                """
+                )
+                cur.execute(
+                    "insert into bot_state (id) values (1) on conflict (id) do nothing;"
+                )
 
         def get_state(self) -> str:
             with self.conn.cursor() as cur:
@@ -228,7 +278,7 @@ def _make_psycopg2_db(conn_str):
                 cur.execute(
                     "insert into bot_state (id, state, updated_at) values (1, %s, now()) "
                     "on conflict (id) do update set state=excluded.state, updated_at=now();",
-                    (state,)
+                    (state,),
                 )
 
         def write_trades(self, rows):
@@ -243,15 +293,16 @@ def _make_psycopg2_db(conn_str):
                     values
                       (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    normalized
+                    normalized,
                 )
 
         def write_equity(self, e):
+            equity_value = _resolve_equity_value(e)
             with self.conn.cursor() as cur:
                 cur.execute(
                     "insert into equity_curve (time, equity) values (%s, %s) "
                     "on conflict (time) do update set equity=excluded.equity;",
-                    (e["time"], e["equity"])
+                    (e["time"], equity_value),
                 )
 
         def close(self):
@@ -276,4 +327,6 @@ class DB:
             try:
                 return _make_psycopg2_db(dsn)
             except Exception as e_psycopg2:
-                return _NoOpDB(err=f"psycopg error: {e_psycopg}; psycopg2 error: {e_psycopg2}")
+                return _NoOpDB(
+                    err=f"psycopg error: {e_psycopg}; psycopg2 error: {e_psycopg2}"
+                )
