@@ -4,24 +4,39 @@ live_connectors:
     exchange_id: bybit
     paper: false
     default_type: swap
-    symbols: ["AUTO"]
+    # מומלץ להתחיל רק עם BTC ו-ETH כדי להרגיע רעש
+    symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT"]
     timeframe: "1m"
     htf_timeframe: "5m"
 
 strategy:
-  donchian_len: 4
-  adx_min: 0
+  # היה 4 → מעלה ל-20 כדי לצמצם רעש
+  donchian_len: 20
+  # היה 0 → מחזיר פילטר מגמה אמיתי
+  adx_min: 18
 
 trade_manager:
-  atr_k_sl: 0.6
-  r1_R: 0.4
-  r2_R: 0.8
+  # היה 0.6 → סטופ רחב יותר, פחות רעש
+  atr_k_sl: 1.2
+
+  # היה 0.4 / 0.8 → R:R הגיוני
+  r1_R: 1.0
+  r2_R: 2.0
+
   p1_pct: 0.5
   p2_pct: 0.5
-  be_after_R: 0.4
-  max_bars_in_trade: 50
+
+  # היה 0.4 → break-even רק אחרי שהטרייד באמת מתקדם
+  be_after_R: 1.0
+
+  # אפשר מעט יותר זמן לטרייד
+  max_bars_in_trade: 80
 
 portfolio:
   equity0: "auto"
-  risk_per_trade: 0.03
-  max_position_pct: 0.70
+
+  # היה 0.03 → 1% סיכון לטרייד
+  risk_per_trade: 0.01
+
+  # היה 0.70 → לא יותר מ-30% מההון בפוזיציה
+  max_position_pct: 0.30
