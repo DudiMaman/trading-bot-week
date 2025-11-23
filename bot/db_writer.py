@@ -74,9 +74,9 @@ def _resolve_equity_value(e: Mapping[str, Any]) -> float:
         from .live_equity import get_live_total_equity
 
         live_equity = float(get_live_total_equity())
-        print(
-            f"[DB] overriding payload equity={e.get('equity')} "
-            f"with live Bybit totalEquity={live_equity}"
+        #print(
+        #    f"[DB] overriding payload equity={e.get('equity')} "
+        #    f"with live Bybit totalEquity={live_equity}"
         )
         return live_equity
     except Exception as err:
