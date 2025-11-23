@@ -46,22 +46,36 @@
   </header>
 
   <section>
-    <h2>Trades <span class="muted">(התצוגה לפי אזור הזמן שנבחר)</span></h2>
+    <h2>Trades (live_trades – כל שורה = טרייד מאוחד)</h2>
+    <p class="muted">התצוגה לפי אזור הזמן שנבחר. הזמנים הם של כניסה ויציאה מהטרייד.</p>
     <table id="trades-table">
       <thead>
         <tr>
-          <th>Equity</th><th>PnL</th><th>Qty</th><th>Price</th><th>Type</th><th>Side</th><th>Symbol</th><th>Time</th>
+          <th>Symbol</th>
+          <th>Side</th>
+          <th>Entry price</th>
+          <th>Exit price</th>
+          <th>Qty</th>
+          <th>PnL ($)</th>
+          <th>PnL (R)</th>
+          <th>Bars</th>
+          <th>Entry time</th>
+          <th>Exit time</th>
         </tr>
       </thead>
       <tbody></tbody>
     </table>
-    <p class="muted">המערכת פועלת בפועל ב-UTC; העמוד מציג זמנים לפי הבחירה למעלה. ברירת המחדל: עסקאות חיות מ-<code>bybit</code> (לא טסטנט).</p>
+    <p class="muted">
+      המערכת פועלת בפועל ב-UTC; העמוד מציג זמנים לפי הבחירה למעלה.
+      <br />
+      ברירת המחדל API: <code>/api/live_trades_db?limit=300&amp;connector=bybit</code>.
+    </p>
   </section>
 
   <script>
     // ===== Helpers =====
     const $ = s => document.querySelector(s);
-    const fmtNum = (x, d=2) => {
+    const fmtNum = (x, d = 2) => {
       const n = Number(x);
       return Number.isFinite(n) ? n.toFixed(d) : (x ?? "");
     };
@@ -72,7 +86,7 @@
 
     // ===== Wire UI =====
     $("#csv-download").addEventListener("click", () => {
-      // יצוא CSV (מקור CSV; שימושי לגיבוי/בדיקות)
+      // יצוא CSV המקורי (trades.csv) – נשאר כגיבוי
       window.location.href = "/export/trades.csv";
     });
 
@@ -95,12 +109,11 @@
     }
 
     async function fetchTrades() {
-      // ברירת מחדל: connector=bybit, limit=500
-      const r = await fetch("/api/trades_db?limit=500", { cache: "no-store" });
+      // דיפולט: לוקחים מה-DB המאוחד (live_trades)
+      const r = await fetch("/api/live_trades_db?limit=300", { cache: "no-store" });
       if (r.status === 503) {
-        // אין DB — ננסה את /data (CSV) כגיבוי
+        // אין DB – ננסה /data כהיסטוריה בסיסית
         const b = await (await fetch("/data", { cache: "no-store" })).json();
-        // /data מחזיר trades עם time_il כבר לצרכי תצוגה
         return b.trades || [];
       }
       if (!r.ok) throw new Error("trades failed");
@@ -115,16 +128,30 @@
       pill.classList.toggle("err", st.status !== "RUNNING");
 
       $("#status-source").textContent = st.source || (st.manual_override ? "manual" : "csv");
-      $("#last-refresh").textContent = (st.last_update || new Date().toISOString()).replace("T"," ").replace("Z","");
+      $("#last-refresh").textContent = (st.last_update || new Date().toISOString())
+        .replace("T", " ")
+        .replace("Z", "");
     }
 
     function renderHealth(h) {
       $("#log-dir").textContent = h.log_dir || "—";
     }
 
-    function timeForRow(row) {
-      if (tz === "IL" && row.time_il) return row.time_il;           // מהשרת
-      if (row.time) return String(row.time).replace("T"," ").replace("Z","");
+    function timeEntryForRow(row) {
+      if (tz === "IL" && row.time_entry_il) return row.time_entry_il;
+      if (row.time_entry) return String(row.time_entry).replace("T", " ").replace("Z", "");
+      // back-compat
+      if (tz === "IL" && row.time_il) return row.time_il;
+      if (row.time) return String(row.time).replace("T", " ").replace("Z", "");
+      return "";
+    }
+
+    function timeExitForRow(row) {
+      if (tz === "IL" && row.time_exit_il) return row.time_exit_il;
+      if (row.time_exit) return String(row.time_exit).replace("T", " ").replace("Z", "");
+      // back-compat – אם אין time_exit ניקח את time_entry
+      if (tz === "IL" && row.time_entry_il) return row.time_entry_il;
+      if (row.time_entry) return String(row.time_entry).replace("T", " ").replace("Z", "");
       return "";
     }
 
@@ -132,18 +159,19 @@
       lastTrades = rows;
       const tb = $("#trades-table tbody");
       tb.innerHTML = "";
-      // מציגים עד 500 אחרונים (ה־API כבר מגביל)
       rows.forEach(r => {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td>${fmtNum(r.equity, 2)}</td>
-          <td>${fmtNum(r.pnl, 2)}</td>
-          <td>${fmtNum(r.qty, 6)}</td>
-          <td>${fmtNum(r.price, 6)}</td>
-          <td>${r.type ?? ""}</td>
-          <td>${r.side ?? ""}</td>
           <td>${r.symbol ?? ""}</td>
-          <td>${timeForRow(r)}</td>
+          <td>${r.side ?? ""}</td>
+          <td>${fmtNum(r.entry_price, 6)}</td>
+          <td>${fmtNum(r.exit_price, 6)}</td>
+          <td>${fmtNum(r.qty, 6)}</td>
+          <td>${fmtNum(r.pnl, 2)}</td>
+          <td>${fmtNum(r.pnl_r, 2)}</td>
+          <td>${r.bars ?? ""}</td>
+          <td>${timeEntryForRow(r)}</td>
+          <td>${timeExitForRow(r)}</td>
         `;
         tb.appendChild(tr);
       });
