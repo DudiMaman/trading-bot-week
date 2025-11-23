@@ -5,6 +5,7 @@ from datetime import datetime
 THIS_DIR = os.path.dirname(__file__)
 LOG_DIR = os.path.join(THIS_DIR, "logs")
 TRADES_CSV = os.path.join(LOG_DIR, "trades.csv")
+EQUITY_CSV = os.path.join(LOG_DIR, "equity_curve.csv")
 
 
 def load_trades(path: str):
@@ -29,10 +30,42 @@ def load_trades(path: str):
     return trades
 
 
+def load_equity_curve(path: str):
+    points = []
+    if not os.path.exists(path):
+        print(f"⚠️ equity_curve.csv not found at: {path}")
+        return points
+
+    with open(path, "r", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            try:
+                ts = datetime.fromisoformat(row["time"])
+            except Exception:
+                ts = row.get("time")
+            try:
+                eq = float(row["equity"])
+            except Exception:
+                continue
+            points.append((ts, eq))
+    # ממויין לפי זמן
+    points.sort(key=lambda x: x[0] if isinstance(x[0], datetime) else x[0])
+    return points
+
+
 def analyze(trades):
+    print("====== BOT PERFORMANCE SUMMARY ======")
+
     if not trades:
-        print("⚠️ No trades to analyze.")
+        print("⚠️ No trades in trades.csv.")
         return
+
+    # כל הטריידים
+    print(f"Total log rows in trades.csv: {len(trades)}")
+
+    # טריידי כניסה
+    enters = [t for t in trades if t["type"] == "ENTER"]
+    print(f"ENTER trades: {len(enters)}")
 
     # ניקח רק יציאות כדי לחשב רווחיות: TP1/TP2/SL/TIME
     exit_types = {"TP1", "TP2", "SL", "TIME"}
@@ -40,53 +73,3 @@ def analyze(trades):
 
     total_trades = len(exits)
     if total_trades == 0:
-        print("⚠️ No exit trades (TP/SL/TIME) found – can't compute winrate.")
-        return
-
-    wins = [t for t in exits if t["pnl"] > 0]
-    losses = [t for t in exits if t["pnl"] < 0]
-
-    gross_pnl = sum(t["pnl"] for t in exits)
-    avg_pnl = gross_pnl / total_trades if total_trades > 0 else 0.0
-    winrate = (len(wins) / total_trades) * 100.0 if total_trades > 0 else 0.0
-
-    # drawdown פשוט על סמך equity ביציאות
-    equities = [t["equity"] for t in exits]
-    peak = equities[0]
-    max_dd = 0.0
-    for eq in equities:
-        if eq > peak:
-            peak = eq
-        dd = peak - eq
-        if dd > max_dd:
-            max_dd = dd
-
-    print("====== BOT PERFORMANCE SUMMARY ======")
-    print(f"Total exit trades: {total_trades}")
-    print(f"Wins: {len(wins)}, Losses: {len(losses)}")
-    print(f"Winrate: {winrate:.2f}%")
-    print(f"Gross PnL: {gross_pnl:.2f} USDT")
-    print(f"Avg PnL per trade: {avg_pnl:.2f} USDT")
-    print(f"Max drawdown (approx, based on exit equity): {max_dd:.2f} USDT")
-
-    # פיצול לפי סוג יציאה
-    by_type = {}
-    for t in exits:
-        ttype = t["type"]
-        by_type.setdefault(ttype, []).append(t)
-
-    print("\nPnL by exit type:")
-    for ttype, arr in by_type.items():
-        s = sum(x["pnl"] for x in arr)
-        n = len(arr)
-        print(f"  {ttype}: {s:.2f} USDT over {n} trades")
-
-
-def main():
-    print(f"📈 Loading trades from: {TRADES_CSV}")
-    trades = load_trades(TRADES_CSV)
-    analyze(trades)
-
-
-if __name__ == "__main__":
-    main()
