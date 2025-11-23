@@ -314,7 +314,7 @@ def main():
         print(f"⚠️ Ignoring unknown trade_manager keys: {unknown_t}")
     tm = TradeManager(**clean_t)
 
-       # 4) Portfolio – משיכת equity מבייביט כשמוגדר "auto"
+    # 4) Portfolio – משיכת equity מבייביט כשמוגדר "auto"
     portfolio = cfg.get("portfolio", {}) or {}
     equity_cfg = portfolio.get("equity0", "auto")
 
@@ -379,6 +379,9 @@ def main():
         risk_per_trade=float(portfolio.get("risk_per_trade", 0.03)),
         max_position_pct=float(portfolio.get("max_position_pct", 0.70)),
     )
+
+    # מזהה קונפיג לגרסה זו (לטבלת live_trades)
+    config_id = os.getenv("BOT_CONFIG_ID", "SAFE_V1")
 
     # 5) Initial equity log
     now_utc = datetime.now(timezone.utc)
@@ -589,6 +592,7 @@ def main():
                             else (entry - price) * close_qty
                         )
                         equity += pnl
+                        pos["realized_pnl"] = pos.get("realized_pnl", 0.0) + pnl
 
                         new_qty = max(
                             0.0,
@@ -641,6 +645,7 @@ def main():
                             else (entry - price) * close_qty
                         )
                         equity += pnl
+                        pos["realized_pnl"] = pos.get("realized_pnl", 0.0) + pnl
 
                         new_qty = max(
                             0.0,
@@ -691,6 +696,20 @@ def main():
                         else (entry - price_exit) * close_qty
                     )
                     equity += pnl
+                    pos["realized_pnl"] = pos.get("realized_pnl", 0.0) + pnl
+
+                    trade_id = pos.get("trade_id")
+                    if trade_id and db and hasattr(db, "close_live_trade"):
+                        try:
+                            db.close_live_trade(
+                                trade_id=trade_id,
+                                exit_price=price_exit,
+                                realized_pnl=pos.get("realized_pnl", pnl),
+                                exit_type="SL",
+                                equity_at_exit=equity,
+                            )
+                        except Exception as e:
+                            print(f"[WARN] close_live_trade (SL) failed for {key}: {e}")
 
                     new_qty = max(
                         0.0,
@@ -734,12 +753,27 @@ def main():
                 if not order_id:
                     print(f"[TIME] order failed for {key}")
                 else:
+                    exit_price = price
                     pnl = (
-                        (price - entry) * close_qty
+                        (exit_price - entry) * close_qty
                         if side == "long"
-                        else (entry - price) * close_qty
+                        else (entry - exit_price) * close_qty
                     )
                     equity += pnl
+                    pos["realized_pnl"] = pos.get("realized_pnl", 0.0) + pnl
+
+                    trade_id = pos.get("trade_id")
+                    if trade_id and db and hasattr(db, "close_live_trade"):
+                        try:
+                            db.close_live_trade(
+                                trade_id=trade_id,
+                                exit_price=exit_price,
+                                realized_pnl=pos.get("realized_pnl", pnl),
+                                exit_type="TIME",
+                                equity_at_exit=equity,
+                            )
+                        except Exception as e:
+                            print(f"[WARN] close_live_trade (TIME) failed for {key}: {e}")
 
                     new_qty = max(
                         0.0,
@@ -754,7 +788,7 @@ def main():
                         key[1],
                         "TIME",
                         side,
-                        price,
+                        exit_price,
                         close_qty,
                         pnl,
                         equity,
@@ -864,6 +898,25 @@ def main():
                     print(f"[ENTER] order failed for {key}")
                     continue
 
+                # סיכון בדולרים (1R = מרחק בין כניסה ל-SL)
+                risk_usd = R * qty
+
+                trade_id = None
+                if db and hasattr(db, "open_live_trade"):
+                    try:
+                        trade_id = db.open_live_trade(
+                            connector=key[0],
+                            symbol=sym,
+                            side=side,
+                            entry_price=price,
+                            qty=qty,
+                            risk_usd=risk_usd,
+                            equity_at_entry=equity,
+                            config_id=config_id,
+                        )
+                    except Exception as e:
+                        print(f"[WARN] open_live_trade failed for {key}: {e}")
+
                 # מעדכנים את התקציב הפנוי לפי הנומינל של הטרייד החדש
                 entry_notional = qty * price
                 remaining_notional = max(0.0, remaining_notional - entry_notional)
@@ -882,6 +935,8 @@ def main():
                     "moved_to_be": False,
                     "conn": conn,
                     "entry_order_id": order_id,
+                    "trade_id": trade_id,
+                    "realized_pnl": 0.0,
                 }
 
                 append_trade(
