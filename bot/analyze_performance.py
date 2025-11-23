@@ -48,9 +48,63 @@ def load_equity_curve(path: str):
             except Exception:
                 continue
             points.append((ts, eq))
-    # ממויין לפי זמן
+    # מיון לפי זמן
     points.sort(key=lambda x: x[0] if isinstance(x[0], datetime) else x[0])
     return points
+
+
+def summarize_by_symbol(exits):
+    """
+    סיכום ביצועים לפי סימבול:
+    - מספר טריידים
+    - Winrate
+    - PnL כולל
+    - PnL ממוצע
+    """
+    if not exits:
+        print("⚠️ No exit trades to summarize by symbol yet.")
+        return
+
+    by_symbol = {}
+    for t in exits:
+        sym = t.get("symbol") or "UNKNOWN"
+        by_symbol.setdefault(sym, []).append(t)
+
+    summary = []
+    for sym, arr in by_symbol.items():
+        n = len(arr)
+        wins = sum(1 for x in arr if x["pnl"] > 0)
+        losses = sum(1 for x in arr if x["pnl"] < 0)
+        gross_pnl = sum(x["pnl"] for x in arr)
+        avg_pnl = gross_pnl / n if n > 0 else 0.0
+        winrate = (wins / n) * 100.0 if n > 0 else 0.0
+        summary.append(
+            {
+                "symbol": sym,
+                "trades": n,
+                "wins": wins,
+                "losses": losses,
+                "winrate": winrate,
+                "gross_pnl": gross_pnl,
+                "avg_pnl": avg_pnl,
+            }
+        )
+
+    # מיון מהסימבולים הכי רווחיים להכי מפסידים
+    summary.sort(key=lambda x: x["gross_pnl"], reverse=True)
+
+    print("\n====== PERFORMANCE BY SYMBOL ======")
+    print("symbol | trades | wins | losses | winrate% | gross_pnl | avg_pnl")
+    for row in summary:
+        print(
+            f"{row['symbol']:10s} "
+            f"{row['trades']:6d} "
+            f"{row['wins']:5d} "
+            f"{row['losses']:7d} "
+            f"{row['winrate']:9.2f} "
+            f"{row['gross_pnl']:10.2f} "
+            f"{row['avg_pnl']:8.2f}"
+        )
 
 
 def analyze(trades):
@@ -60,18 +114,18 @@ def analyze(trades):
         print("⚠️ No trades in trades.csv.")
         return
 
-    # כל הטריידים
+    # כל הרשומות בקובץ
     print(f"Total log rows in trades.csv: {len(trades)}")
 
     # טריידי כניסה
-    enters = [t for t in trades if t["type"] == "ENTER"]
+    enters = [t for t in trades if t.get("type") == "ENTER"]
     print(f"ENTER trades: {len(enters)}")
 
-    # ניקח רק יציאות כדי לחשב רווחיות: TP1/TP2/SL/TIME
+    # יציאות (TP1/TP2/SL/TIME)
     exit_types = {"TP1", "TP2", "SL", "TIME"}
-    exits = [t for t in trades if t["type"] in exit_types]
-
+    exits = [t for t in trades if t.get("type") in exit_types]
     total_trades = len(exits)
+
     if total_trades == 0:
         print("⚠️ No exit trades (TP/SL/TIME) found – can't compute winrate yet.")
     else:
@@ -91,7 +145,7 @@ def analyze(trades):
         # פיצול לפי סוג יציאה
         by_type = {}
         for t in exits:
-            ttype = t["type"]
+            ttype = t.get("type")
             by_type.setdefault(ttype, []).append(t)
 
         print("\nPnL by exit type:")
@@ -99,6 +153,9 @@ def analyze(trades):
             s = sum(x["pnl"] for x in arr)
             n = len(arr)
             print(f"  {ttype}: {s:.2f} USDT over {n} trades")
+
+        # סיכום לפי סימבול
+        summarize_by_symbol(exits)
 
     # גם אם אין יציאות – ננתח equity_curve
     print("\n====== EQUITY CURVE (approx) ======")
