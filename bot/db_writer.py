@@ -1,4 +1,3 @@
-# bot/db_writer.py
 import os
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -115,6 +114,30 @@ class _NoOpDB:
     def write_equity(self, e):
         pass
 
+    # טריידים מאוחדים (live_trades)
+    def open_live_trade(
+        self,
+        connector: str,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        qty: float,
+        risk_usd: float,
+        equity_at_entry: float | None = None,
+        config_id: str | None = None,
+    ) -> int | None:
+        return None
+
+    def close_live_trade(
+        self,
+        trade_id: int,
+        exit_price: float,
+        realized_pnl: float,
+        exit_type: str | None = None,
+        equity_at_exit: float | None = None,
+    ):
+        pass
+
     def close(self):
         pass
 
@@ -170,6 +193,30 @@ def _make_psycopg_db(conn_str):
                     "insert into bot_state (id) values (1) on conflict (id) do nothing;"
                 )
 
+                # טבלת טריידים מאוחדים (כניסה+יציאה)
+                cur.execute(
+                    """
+                    create table if not exists live_trades(
+                      id              bigserial primary key,
+                      connector       text        not null,
+                      symbol          text        not null,
+                      side            text        not null,
+                      time_entry      timestamptz not null,
+                      time_exit       timestamptz,
+                      entry_price     double precision not null,
+                      exit_price      double precision,
+                      qty             double precision not null,
+                      equity_at_entry double precision,
+                      equity_at_exit  double precision,
+                      risk_usd        double precision not null,
+                      realized_pnl    double precision,
+                      r_multiple      double precision,
+                      exit_type       text,
+                      config_id       text
+                    );
+                """
+                )
+
         def get_state(self) -> str:
             with self.conn.cursor() as cur:
                 cur.execute("select state from bot_state where id=1;")
@@ -182,6 +229,89 @@ def _make_psycopg_db(conn_str):
                     "insert into bot_state (id, state, updated_at) values (1, %s, now()) "
                     "on conflict (id) do update set state=excluded.state, updated_at=now();",
                     (state,),
+                )
+
+        # -------- live_trades: פתיחת טרייד --------
+        def open_live_trade(
+            self,
+            connector: str,
+            symbol: str,
+            side: str,
+            entry_price: float,
+            qty: float,
+            risk_usd: float,
+            equity_at_entry: float | None = None,
+            config_id: str | None = None,
+        ) -> int:
+            time_entry = datetime.now(timezone.utc)
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into live_trades (
+                      connector, symbol, side,
+                      time_entry, entry_price, qty,
+                      equity_at_entry, risk_usd, config_id
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    returning id;
+                    """,
+                    (
+                        connector_label(),  # שומר תמיד תווית אחידה
+                        symbol,
+                        side,
+                        time_entry,
+                        float(entry_price),
+                        float(qty),
+                        float(equity_at_entry) if equity_at_entry is not None else None,
+                        float(risk_usd),
+                        config_id,
+                    ),
+                )
+                row = cur.fetchone()
+            return int(row[0])
+
+        # -------- live_trades: סגירת טרייד --------
+        def close_live_trade(
+            self,
+            trade_id: int,
+            exit_price: float,
+            realized_pnl: float,
+            exit_type: str | None = None,
+            equity_at_exit: float | None = None,
+        ):
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "select risk_usd from live_trades where id=%s;",
+                    (trade_id,),
+                )
+                row = cur.fetchone()
+                risk_usd = float(row[0]) if row and row[0] is not None else 0.0
+
+                if risk_usd > 0:
+                    r_multiple = float(realized_pnl) / risk_usd
+                else:
+                    r_multiple = None
+
+                cur.execute(
+                    """
+                    update live_trades
+                    set time_exit      = %s,
+                        exit_price     = %s,
+                        realized_pnl   = %s,
+                        r_multiple     = %s,
+                        exit_type      = %s,
+                        equity_at_exit = %s
+                    where id = %s;
+                    """,
+                    (
+                        datetime.now(timezone.utc),
+                        float(exit_price),
+                        float(realized_pnl),
+                        r_multiple,
+                        exit_type,
+                        float(equity_at_exit) if equity_at_exit is not None else None,
+                        trade_id,
+                    ),
                 )
 
         def write_trades(self, rows):
@@ -267,6 +397,29 @@ def _make_psycopg2_db(conn_str):
                     "insert into bot_state (id) values (1) on conflict (id) do nothing;"
                 )
 
+                cur.execute(
+                    """
+                    create table if not exists live_trades(
+                      id              bigserial primary key,
+                      connector       text        not null,
+                      symbol          text        not null,
+                      side            text        not null,
+                      time_entry      timestamptz not null,
+                      time_exit       timestamptz,
+                      entry_price     double precision not null,
+                      exit_price      double precision,
+                      qty             double precision not null,
+                      equity_at_entry double precision,
+                      equity_at_exit  double precision,
+                      risk_usd        double precision not null,
+                      realized_pnl    double precision,
+                      r_multiple      double precision,
+                      exit_type       text,
+                      config_id       text
+                    );
+                """
+                )
+
         def get_state(self) -> str:
             with self.conn.cursor() as cur:
                 cur.execute("select state from bot_state where id=1;")
@@ -279,6 +432,87 @@ def _make_psycopg2_db(conn_str):
                     "insert into bot_state (id, state, updated_at) values (1, %s, now()) "
                     "on conflict (id) do update set state=excluded.state, updated_at=now();",
                     (state,),
+                )
+
+        def open_live_trade(
+            self,
+            connector: str,
+            symbol: str,
+            side: str,
+            entry_price: float,
+            qty: float,
+            risk_usd: float,
+            equity_at_entry: float | None = None,
+            config_id: str | None = None,
+        ) -> int:
+            time_entry = datetime.now(timezone.utc)
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into live_trades (
+                      connector, symbol, side,
+                      time_entry, entry_price, qty,
+                      equity_at_entry, risk_usd, config_id
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    returning id;
+                    """,
+                    (
+                        connector_label(),
+                        symbol,
+                        side,
+                        time_entry,
+                        float(entry_price),
+                        float(qty),
+                        float(equity_at_entry) if equity_at_entry is not None else None,
+                        float(risk_usd),
+                        config_id,
+                    ),
+                )
+                row = cur.fetchone()
+            return int(row[0])
+
+        def close_live_trade(
+            self,
+            trade_id: int,
+            exit_price: float,
+            realized_pnl: float,
+            exit_type: str | None = None,
+            equity_at_exit: float | None = None,
+        ):
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "select risk_usd from live_trades where id=%s;",
+                    (trade_id,),
+                )
+                row = cur.fetchone()
+                risk_usd = float(row[0]) if row and row[0] is not None else 0.0
+
+                if risk_usd > 0:
+                    r_multiple = float(realized_pnl) / risk_usd
+                else:
+                    r_multiple = None
+
+                cur.execute(
+                    """
+                    update live_trades
+                    set time_exit      = %s,
+                        exit_price     = %s,
+                        realized_pnl   = %s,
+                        r_multiple     = %s,
+                        exit_type      = %s,
+                        equity_at_exit = %s
+                    where id = %s;
+                    """,
+                    (
+                        datetime.now(timezone.utc),
+                        float(exit_price),
+                        float(realized_pnl),
+                        r_multiple,
+                        exit_type,
+                        float(equity_at_exit) if equity_at_exit is not None else None,
+                        trade_id,
+                    ),
                 )
 
         def write_trades(self, rows):
