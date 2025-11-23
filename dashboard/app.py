@@ -129,21 +129,11 @@ def _query_db_equity(
             pass
 
 
-# ===== NEW: שאילתת live_trades (טרייד אחד בשורה) =====
-def _query_db_live_trades(
-    limit: int = 200,
-    connector: Optional[str] = None,
-    start: Optional[datetime] = None,
-    end: Optional[datetime] = None,
-):
+def _query_db_live_trades(limit: int = 200, connector: Optional[str] = None):
     """
-    קורא את טבלת/VIEW live_trades ומחזיר טריידים מאוחדים.
-    מצופה שלטבלה יהיו העמודות:
-      id, connector, symbol, side,
-      time_entry, time_exit,
-      entry_price, exit_price,
-      qty
-    בנוסף מחשבים כאן pnl_usd לטרייד.
+    שאילתת טבלת live_trades – כל שורה = טרייד מאוחד (כניסה/יציאה).
+    מנסה קודם SELECT מפורש עם כל העמודות "העשירות".
+    אם יש שגיאה (גרסה ישנה בלי חלק מהעמודות) – נופל ל-SELECT * פשוט.
     """
     conn, kind = _db_connect()
     try:
@@ -153,14 +143,9 @@ def _query_db_live_trades(
         if connector:
             where.append("connector = %s")
             params.append(connector)
-        if start:
-            where.append("time_entry >= %s")
-            params.append(start)
-        if end:
-            where.append("time_entry <= %s")
-            params.append(end)
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-        sql = f"""
+
+        sql_rich = f"""
             SELECT
               id,
               connector,
@@ -171,18 +156,31 @@ def _query_db_live_trades(
               entry_price,
               exit_price,
               qty,
-              CASE
-                WHEN side = 'long'  THEN (exit_price - entry_price) * qty
-                WHEN side = 'short' THEN (entry_price - exit_price) * qty
-                ELSE NULL
-              END AS pnl_usd
+              pnl,
+              pnl_r,
+              max_favorable_excursion_r,
+              max_adverse_excursion_r,
+              bars
             FROM live_trades
             {where_sql}
-            ORDER BY time_entry DESC
+            ORDER BY COALESCE(time_exit, time_entry) DESC, id DESC
             LIMIT %s
         """
-        params.append(limit)
-        cur.execute(sql, tuple(params))
+        params_rich = params + [limit]
+
+        try:
+            cur.execute(sql_rich, tuple(params_rich))
+        except Exception:
+            # גרסת טבלה ישנה – לוקחים הכל כמו שהוא
+            sql_fallback = f"""
+                SELECT *
+                FROM live_trades
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT %s
+            """
+            cur.execute(sql_fallback, tuple(params_rich))
+
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         return rows
@@ -196,12 +194,7 @@ def _query_db_live_trades(
 def _current_status_db(quiet_sec: Optional[int] = None):
     """סטטוס לפי DB (equity/trades)"""
     if not _db_available():
-        return {
-            "status": "STOPPED",
-            "last_update": None,
-            "age_sec": None,
-            "source": "db",
-        }
+        return {"status": "STOPPED", "last_update": None, "age_sec": None, "source": "db"}
 
     if quiet_sec is None:
         quiet_sec = int((os.getenv("DASH_QUIET_SEC") or "900").strip())
@@ -227,12 +220,7 @@ def _current_status_db(quiet_sec: Optional[int] = None):
         pass
 
     if not last_ts:
-        return {
-            "status": "STOPPED",
-            "last_update": None,
-            "age_sec": None,
-            "source": "db",
-        }
+        return {"status": "STOPPED", "last_update": None, "age_sec": None, "source": "db"}
 
     age = (now_utc - last_ts).total_seconds()
     return {
@@ -301,7 +289,8 @@ def _to_dt(ts: str) -> Optional[datetime]:
 def _last_timestamp(row: dict) -> Optional[datetime]:
     if not isinstance(row, dict):
         return None
-    for key in ("time", "timestamp", "ts", "datetime", "date"):
+    # מעדכן: קודם time_exit / time_entry ואז time רגיל
+    for key in ("time_exit", "time_entry", "time", "timestamp", "ts", "datetime", "date"):
         if key in row and row[key]:
             return _to_dt(row[key]) if isinstance(row[key], str) else row[key]
     return None
@@ -329,12 +318,7 @@ def _read_csv(path, limit=None):
             reader = csv.DictReader(f)
             for row in reader:
                 if row:
-                    rows.append(
-                        {
-                            (k.strip() if isinstance(k, str) else k): v
-                            for k, v in row.items()
-                        }
-                    )
+                    rows.append({(k.strip() if isinstance(k, str) else k): v for k, v in row.items()})
     except Exception:
         return []
     if limit:
@@ -471,38 +455,6 @@ def api_trades_db():
     return jsonify(out)
 
 
-# ===== NEW: API לטבלת live_trades המאוחדת =====
-@app.route("/api/live_trades_db")
-def api_live_trades_db():
-    if not _db_available():
-        return jsonify({"error": "DB not available"}), 503
-    try:
-        limit = int(request.args.get("limit", "500"))
-    except Exception:
-        limit = 500
-
-    connector = (request.args.get("connector") or "").strip()
-    if connector == "":
-        connector = "bybit"
-
-    start, end, _ = _compute_range_from_query()
-    rows = _query_db_live_trades(limit=limit, connector=connector, start=start, end=end)
-
-    out = []
-    for r in rows:
-        rr = dict(r)
-        # time_entry / time_exit לישראל
-        te = rr.get("time_entry")
-        tx = rr.get("time_exit")
-        te_dt = _to_dt(te) if isinstance(te, str) else te
-        tx_dt = _to_dt(tx) if isinstance(tx, str) else tx
-        rr["time_entry_il"] = _utc_to_il_iso(te_dt) if te_dt else ""
-        rr["time_exit_il"] = _utc_to_il_iso(tx_dt) if tx_dt else ""
-        out.append(rr)
-
-    return jsonify(out)
-
-
 @app.route("/api/equity_db")
 def api_equity_db():
     if not _db_available():
@@ -521,6 +473,51 @@ def api_equity_db():
         ts = _last_timestamp(r)
         rr["time_il"] = _utc_to_il_iso(ts) if ts else ""
         out.append(rr)
+    return jsonify(out)
+
+
+@app.route("/api/live_trades_db")
+def api_live_trades_db():
+    """
+    API חדש לדשבורד הראשי – מחזיר רשימת טריידים מאוחדים מטבלת live_trades.
+    כל אובייקט כולל גם time_entry_il / time_exit_il לפי שעון ישראל.
+    """
+    if not _db_available():
+        return jsonify({"error": "DB not available"}), 503
+
+    try:
+        limit = int(request.args.get("limit", "300"))
+    except Exception:
+        limit = 300
+
+    connector = (request.args.get("connector") or "").strip()
+    if connector == "":
+        connector = "bybit"
+
+    rows = _query_db_live_trades(limit=limit, connector=connector)
+
+    out = []
+    for r in rows:
+        rr = dict(r)
+
+        # המרה לדפוס ISO אם הגיעו כ-datetime
+        for key in ("time_entry", "time_exit"):
+            if key in rr and isinstance(rr[key], datetime):
+                rr[key] = rr[key].astimezone(APP_TZ).isoformat()
+
+        # מוסיפים time_entry_il / time_exit_il
+        ts_entry = None
+        ts_exit = None
+        if "time_entry" in rr and rr["time_entry"]:
+            ts_entry = _to_dt(str(rr["time_entry"])) if isinstance(rr["time_entry"], str) else rr["time_entry"]
+        if "time_exit" in rr and rr["time_exit"]:
+            ts_exit = _to_dt(str(rr["time_exit"])) if isinstance(rr["time_exit"], str) else rr["time_exit"]
+
+        rr["time_entry_il"] = _utc_to_il_iso(ts_entry) if ts_entry else ""
+        rr["time_exit_il"] = _utc_to_il_iso(ts_exit) if ts_exit else ""
+
+        out.append(rr)
+
     return jsonify(out)
 
 
@@ -582,9 +579,7 @@ def export_trades():
     rows = _filter_rows_by_time(_read_csv(TRADES_CSV), start, end)
     if not rows:
         output = io.StringIO()
-        csv.writer(output).writerow(
-            ["time", "connector", "symbol", "type", "side", "price", "qty", "pnl", "equity"]
-        )
+        csv.writer(output).writerow(["time", "connector", "symbol", "type", "side", "price", "qty", "pnl", "equity"])
         output.seek(0)
         return send_file(
             io.BytesIO(output.getvalue().encode("utf-8")),
@@ -638,34 +633,27 @@ def export_equity():
 @app.route("/download")
 def download_csv_alias():
     if os.path.exists(TRADES_CSV):
-        return send_file(
-            TRADES_CSV, as_attachment=True, download_name="trades.csv"
-        )
+        return send_file(TRADES_CSV, as_attachment=True, download_name="trades.csv")
     abort(404, description="trades.csv not found")
 
 
 @app.route("/health")
 def health():
     st = _status_unified()
-    return (
-        jsonify(
-            {
-                "ok": os.path.exists(TRADES_CSV)
-                or os.path.exists(EQUITY_CSV)
-                or _db_available(),
-                "has_trades_csv": os.path.exists(TRADES_CSV),
-                "has_equity_csv": os.path.exists(EQUITY_CSV),
-                "status": st["status"],
-                "source": st.get("source"),
-                "manual_override": st.get("manual_override", False),
-                "last_update": st.get("last_update"),
-                "age_sec": st.get("age_sec"),
-                "log_dir": LOG_DIR,
-                "db_available": _db_available(),
-            }
-        ),
-        200,
-    )
+    return jsonify(
+        {
+            "ok": os.path.exists(TRADES_CSV) or os.path.exists(EQUITY_CSV) or _db_available(),
+            "has_trades_csv": os.path.exists(TRADES_CSV),
+            "has_equity_csv": os.path.exists(EQUITY_CSV),
+            "status": st["status"],
+            "source": st.get("source"),
+            "manual_override": st.get("manual_override", False),
+            "last_update": st.get("last_update"),
+            "age_sec": st.get("age_sec"),
+            "log_dir": LOG_DIR,
+            "db_available": _db_available(),
+        }
+    ), 200
 
 
 # ===== APIs ל-Play/Pause עדין =====
