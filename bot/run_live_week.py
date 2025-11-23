@@ -85,6 +85,52 @@ def determine_amount_step(market: dict) -> float:
     return max(step, 1e-12)
 
 
+def get_min_amount_from_market(market: dict) -> float:
+    """
+    מחלץ את כמות המינימום למסחר מהשוק, אם קיימת.
+    """
+    try:
+        lims = (market or {}).get("limits", {}) or {}
+        amt = (lims.get("amount") or {}).get("min")
+        return float(amt) if amt is not None else 0.0
+    except Exception:
+        return 0.0
+
+
+def normalize_position_qty(conn, symbol: str, qty: float) -> float:
+    """
+    מנקה שאריות כמות קטנות מדי לפי המידע מהבורסה:
+    - מנרמל לפי ה-step (precision).
+    - אם אחרי הנירמול הכמות קטנה מהמינימום או ממש זעירה – מחזיר 0.
+    כך לא נשארות פוזיציות 'אבק' שמנסות להיסגר לנצח.
+    """
+    if qty <= 0:
+        return 0.0
+
+    min_qty = 0.0
+    step = 0.0
+
+    try:
+        ex = getattr(conn, "exchange", None) if conn is not None else None
+        if ex is not None:
+            market = ex.market(symbol)
+            step = determine_amount_step(market)
+            min_qty = get_min_amount_from_market(market)
+    except Exception:
+        pass
+
+    if step > 0:
+        qty = round_step(qty, step)
+
+    # אם יש min_qty מהבורסה – משתמשים בו, אחרת נופלים לפולבאק קטן
+    threshold = min_qty if min_qty > 0 else 1e-8
+
+    if qty < threshold:
+        return 0.0
+
+    return qty
+
+
 # ---------- NEW: helpers for live position size (SPOT + FUTURES) ----------
 def get_live_position_qty(conn, symbol: str, side: str):
     """
@@ -573,6 +619,37 @@ def main():
                     conn, key[1], side, requested_close_qty, pos["qty"]
                 )
 
+                # בדיקת אבק: אם הכמות האמיתית קטנה מהמינימום – מסמנים כסגור ומתעלמים
+                min_qty = 0.0
+                if conn is not None and hasattr(conn, "exchange"):
+                    try:
+                        market = conn.exchange.market(key[1])
+                        min_qty = get_min_amount_from_market(market)
+                    except Exception as e:
+                        print(f"[TP1] failed to get min_qty for {key}: {e}")
+
+                if live_qty is not None and live_qty > 0 and min_qty > 0 and live_qty < min_qty:
+                    print(
+                        f"[TP1] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
+                    )
+                    pos["qty"] = 0.0
+                    pos["tp1_done"] = True
+                    pos["tp2_done"] = True
+                    trade_id = pos.get("trade_id")
+                    if trade_id and db and hasattr(db, "close_live_trade"):
+                        try:
+                            db.close_live_trade(
+                                trade_id=trade_id,
+                                exit_price=price,
+                                realized_pnl=pos.get("realized_pnl", 0.0),
+                                exit_type="DUST",
+                                equity_at_exit=equity,
+                            )
+                        except Exception as e:
+                            print(f"[WARN] close_live_trade (DUST-TP1) failed for {key}: {e}")
+                    to_close.append(key)
+                    continue
+
                 if close_qty <= 0:
                     print(f"[TP1] no qty available to close for {key}")
                 else:
@@ -594,11 +671,11 @@ def main():
                         equity += pnl
                         pos["realized_pnl"] = pos.get("realized_pnl", 0.0) + pnl
 
-                        new_qty = max(
+                        new_qty_raw = max(
                             0.0,
                             (live_qty if live_qty is not None else pos["qty"]) - close_qty,
                         )
-                        pos["qty"] = new_qty
+                        pos["qty"] = normalize_position_qty(conn, key[1], new_qty_raw)
                         pos["tp1_done"] = True
 
                         append_trade(
@@ -626,6 +703,37 @@ def main():
                     conn, key[1], side, requested_close_qty, pos["qty"]
                 )
 
+                # אבק בפוזיציה
+                min_qty = 0.0
+                if conn is not None and hasattr(conn, "exchange"):
+                    try:
+                        market = conn.exchange.market(key[1])
+                        min_qty = get_min_amount_from_market(market)
+                    except Exception as e:
+                        print(f"[TP2] failed to get min_qty for {key}: {e}")
+
+                if live_qty is not None and live_qty > 0 and min_qty > 0 and live_qty < min_qty:
+                    print(
+                        f"[TP2] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
+                    )
+                    pos["qty"] = 0.0
+                    pos["tp2_done"] = True
+                    pos["tp1_done"] = True
+                    trade_id = pos.get("trade_id")
+                    if trade_id and db and hasattr(db, "close_live_trade"):
+                        try:
+                            db.close_live_trade(
+                                trade_id=trade_id,
+                                exit_price=price,
+                                realized_pnl=pos.get("realized_pnl", 0.0),
+                                exit_type="DUST",
+                                equity_at_exit=equity,
+                            )
+                        except Exception as e:
+                            print(f"[WARN] close_live_trade (DUST-TP2) failed for {key}: {e}")
+                    to_close.append(key)
+                    continue
+
                 if close_qty <= 0:
                     print(f"[TP2] no qty available to close for {key}")
                 else:
@@ -647,11 +755,11 @@ def main():
                         equity += pnl
                         pos["realized_pnl"] = pos.get("realized_pnl", 0.0) + pnl
 
-                        new_qty = max(
+                        new_qty_raw = max(
                             0.0,
                             (live_qty if live_qty is not None else pos["qty"]) - close_qty,
                         )
-                        pos["qty"] = new_qty
+                        pos["qty"] = normalize_position_qty(conn, key[1], new_qty_raw)
                         pos["tp2_done"] = True
 
                         append_trade(
@@ -677,6 +785,35 @@ def main():
                 close_qty, live_qty = compute_close_qty(
                     conn, key[1], side, requested_close_qty, pos["qty"]
                 )
+
+                # אבק בפוזיציה
+                min_qty = 0.0
+                if conn is not None and hasattr(conn, "exchange"):
+                    try:
+                        market = conn.exchange.market(key[1])
+                        min_qty = get_min_amount_from_market(market)
+                    except Exception as e:
+                        print(f"[SL] failed to get min_qty for {key}: {e}")
+
+                if live_qty is not None and live_qty > 0 and min_qty > 0 and live_qty < min_qty:
+                    print(
+                        f"[SL] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
+                    )
+                    pos["qty"] = 0.0
+                    trade_id = pos.get("trade_id")
+                    if trade_id and db and hasattr(db, "close_live_trade"):
+                        try:
+                            db.close_live_trade(
+                                trade_id=trade_id,
+                                exit_price=pos["sl"],
+                                realized_pnl=pos.get("realized_pnl", 0.0),
+                                exit_type="DUST",
+                                equity_at_exit=equity,
+                            )
+                        except Exception as e:
+                            print(f"[WARN] close_live_trade (DUST-SL) failed for {key}: {e}")
+                    to_close.append(key)
+                    continue
 
                 if close_qty <= 0 or conn is None:
                     print(f"[SL] no qty available to close for {key}")
@@ -711,11 +848,11 @@ def main():
                         except Exception as e:
                             print(f"[WARN] close_live_trade (SL) failed for {key}: {e}")
 
-                    new_qty = max(
+                    new_qty_raw = max(
                         0.0,
                         (live_qty if live_qty is not None else pos["qty"]) - close_qty,
                     )
-                    pos["qty"] = new_qty
+                    pos["qty"] = normalize_position_qty(conn, key[1], new_qty_raw)
 
                     append_trade(
                         rows_trades,
@@ -741,6 +878,35 @@ def main():
                 close_qty, live_qty = compute_close_qty(
                     conn, key[1], side, requested_close_qty, pos["qty"]
                 )
+
+                # אבק בפוזיציה
+                min_qty = 0.0
+                if conn is not None and hasattr(conn, "exchange"):
+                    try:
+                        market = conn.exchange.market(key[1])
+                        min_qty = get_min_amount_from_market(market)
+                    except Exception as e:
+                        print(f"[TIME] failed to get min_qty for {key}: {e}")
+
+                if live_qty is not None and live_qty > 0 and min_qty > 0 and live_qty < min_qty:
+                    print(
+                        f"[TIME] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
+                    )
+                    pos["qty"] = 0.0
+                    trade_id = pos.get("trade_id")
+                    if trade_id and db and hasattr(db, "close_live_trade"):
+                        try:
+                            db.close_live_trade(
+                                trade_id=trade_id,
+                                exit_price=price,
+                                realized_pnl=pos.get("realized_pnl", 0.0),
+                                exit_type="DUST",
+                                equity_at_exit=equity,
+                            )
+                        except Exception as e:
+                            print(f"[WARN] close_live_trade (DUST-TIME) failed for {key}: {e}")
+                    to_close.append(key)
+                    continue
 
                 if close_qty <= 0 or conn is None:
                     print(f"[TIME] no qty available to close for {key}")
@@ -775,11 +941,11 @@ def main():
                         except Exception as e:
                             print(f"[WARN] close_live_trade (TIME) failed for {key}: {e}")
 
-                    new_qty = max(
+                    new_qty_raw = max(
                         0.0,
                         (live_qty if live_qty is not None else pos["qty"]) - close_qty,
                     )
-                    pos["qty"] = new_qty
+                    pos["qty"] = normalize_position_qty(conn, key[1], new_qty_raw)
 
                     append_trade(
                         rows_trades,
