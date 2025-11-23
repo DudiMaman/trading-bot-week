@@ -53,14 +53,15 @@ def _db_connect():
     raise RuntimeError("psycopg not installed")
 
 
-def _query_db_trades(limit: int = 100, connector: Optional[str] = None,
-                     start: Optional[datetime] = None, end: Optional[datetime] = None):
+def _query_db_trades(
+    limit: int = 100,
+    connector: Optional[str] = None,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+):
     conn, kind = _db_connect()
     try:
-        if kind == "v3":
-            cur = conn.cursor()
-        else:
-            cur = conn.cursor()
+        cur = conn.cursor()
         where = []
         params = []
         if connector:
@@ -73,13 +74,13 @@ def _query_db_trades(limit: int = 100, connector: Optional[str] = None,
             where.append('"time" <= %s')
             params.append(end)
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-        sql = f'''
+        sql = f"""
             SELECT time, connector, symbol, type, side, price, qty, pnl, equity
             FROM trades
             {where_sql}
             ORDER BY time DESC
             LIMIT %s
-        '''
+        """
         params.append(limit)
         cur.execute(sql, tuple(params))
         cols = [d[0] for d in cur.description]
@@ -92,13 +93,14 @@ def _query_db_trades(limit: int = 100, connector: Optional[str] = None,
             pass
 
 
-def _query_db_equity(limit: int = 200, start: Optional[datetime] = None, end: Optional[datetime] = None):
+def _query_db_equity(
+    limit: int = 200,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+):
     conn, kind = _db_connect()
     try:
-        if kind == "v3":
-            cur = conn.cursor()
-        else:
-            cur = conn.cursor()
+        cur = conn.cursor()
         where = []
         params = []
         if start:
@@ -108,13 +110,77 @@ def _query_db_equity(limit: int = 200, start: Optional[datetime] = None, end: Op
             where.append('"time" <= %s')
             params.append(end)
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-        sql = f'''
+        sql = f"""
             SELECT time, equity
             FROM equity_curve
             {where_sql}
             ORDER BY time DESC
             LIMIT %s
-        '''
+        """
+        params.append(limit)
+        cur.execute(sql, tuple(params))
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        return rows
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+# ===== NEW: שאילתת live_trades (טרייד אחד בשורה) =====
+def _query_db_live_trades(
+    limit: int = 200,
+    connector: Optional[str] = None,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+):
+    """
+    קורא את טבלת/VIEW live_trades ומחזיר טריידים מאוחדים.
+    מצופה שלטבלה יהיו העמודות:
+      id, connector, symbol, side,
+      time_entry, time_exit,
+      entry_price, exit_price,
+      qty
+    בנוסף מחשבים כאן pnl_usd לטרייד.
+    """
+    conn, kind = _db_connect()
+    try:
+        cur = conn.cursor()
+        where = []
+        params = []
+        if connector:
+            where.append("connector = %s")
+            params.append(connector)
+        if start:
+            where.append("time_entry >= %s")
+            params.append(start)
+        if end:
+            where.append("time_entry <= %s")
+            params.append(end)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        sql = f"""
+            SELECT
+              id,
+              connector,
+              symbol,
+              side,
+              time_entry,
+              time_exit,
+              entry_price,
+              exit_price,
+              qty,
+              CASE
+                WHEN side = 'long'  THEN (exit_price - entry_price) * qty
+                WHEN side = 'short' THEN (entry_price - exit_price) * qty
+                ELSE NULL
+              END AS pnl_usd
+            FROM live_trades
+            {where_sql}
+            ORDER BY time_entry DESC
+            LIMIT %s
+        """
         params.append(limit)
         cur.execute(sql, tuple(params))
         cols = [d[0] for d in cur.description]
@@ -130,7 +196,12 @@ def _query_db_equity(limit: int = 200, start: Optional[datetime] = None, end: Op
 def _current_status_db(quiet_sec: Optional[int] = None):
     """סטטוס לפי DB (equity/trades)"""
     if not _db_available():
-        return {"status": "STOPPED", "last_update": None, "age_sec": None, "source": "db"}
+        return {
+            "status": "STOPPED",
+            "last_update": None,
+            "age_sec": None,
+            "source": "db",
+        }
 
     if quiet_sec is None:
         quiet_sec = int((os.getenv("DASH_QUIET_SEC") or "900").strip())
@@ -156,7 +227,12 @@ def _current_status_db(quiet_sec: Optional[int] = None):
         pass
 
     if not last_ts:
-        return {"status": "STOPPED", "last_update": None, "age_sec": None, "source": "db"}
+        return {
+            "status": "STOPPED",
+            "last_update": None,
+            "age_sec": None,
+            "source": "db",
+        }
 
     age = (now_utc - last_ts).total_seconds()
     return {
@@ -203,6 +279,7 @@ _ensure_logs_and_headers()
 
 # ===== עזרי זמן =====
 _IL_TZ_NAMES = ["Asia/Jerusalem", "Israel"]  # לא משתמשים בפועל בספריות tz, רק לתיעוד
+
 
 def _to_dt(ts: str) -> Optional[datetime]:
     if not ts or not isinstance(ts, str):
@@ -252,7 +329,12 @@ def _read_csv(path, limit=None):
             reader = csv.DictReader(f)
             for row in reader:
                 if row:
-                    rows.append({(k.strip() if isinstance(k, str) else k): v for k, v in row.items()})
+                    rows.append(
+                        {
+                            (k.strip() if isinstance(k, str) else k): v
+                            for k, v in row.items()
+                        }
+                    )
     except Exception:
         return []
     if limit:
@@ -389,6 +471,38 @@ def api_trades_db():
     return jsonify(out)
 
 
+# ===== NEW: API לטבלת live_trades המאוחדת =====
+@app.route("/api/live_trades_db")
+def api_live_trades_db():
+    if not _db_available():
+        return jsonify({"error": "DB not available"}), 503
+    try:
+        limit = int(request.args.get("limit", "500"))
+    except Exception:
+        limit = 500
+
+    connector = (request.args.get("connector") or "").strip()
+    if connector == "":
+        connector = "bybit"
+
+    start, end, _ = _compute_range_from_query()
+    rows = _query_db_live_trades(limit=limit, connector=connector, start=start, end=end)
+
+    out = []
+    for r in rows:
+        rr = dict(r)
+        # time_entry / time_exit לישראל
+        te = rr.get("time_entry")
+        tx = rr.get("time_exit")
+        te_dt = _to_dt(te) if isinstance(te, str) else te
+        tx_dt = _to_dt(tx) if isinstance(tx, str) else tx
+        rr["time_entry_il"] = _utc_to_il_iso(te_dt) if te_dt else ""
+        rr["time_exit_il"] = _utc_to_il_iso(tx_dt) if tx_dt else ""
+        out.append(rr)
+
+    return jsonify(out)
+
+
 @app.route("/api/equity_db")
 def api_equity_db():
     if not _db_available():
@@ -468,18 +582,28 @@ def export_trades():
     rows = _filter_rows_by_time(_read_csv(TRADES_CSV), start, end)
     if not rows:
         output = io.StringIO()
-        csv.writer(output).writerow(["time", "connector", "symbol", "type", "side", "price", "qty", "pnl", "equity"])
+        csv.writer(output).writerow(
+            ["time", "connector", "symbol", "type", "side", "price", "qty", "pnl", "equity"]
+        )
         output.seek(0)
-        return send_file(io.BytesIO(output.getvalue().encode("utf-8")), mimetype="text/csv",
-                         as_attachment=True, download_name="trades.csv")
+        return send_file(
+            io.BytesIO(output.getvalue().encode("utf-8")),
+            mimetype="text/csv",
+            as_attachment=True,
+            download_name="trades.csv",
+        )
     headers = list(rows[0].keys())
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=headers)
     writer.writeheader()
     writer.writerows(rows)
     output.seek(0)
-    return send_file(io.BytesIO(output.getvalue().encode("utf-8")), mimetype="text/csv",
-                     as_attachment=True, download_name="trades.csv")
+    return send_file(
+        io.BytesIO(output.getvalue().encode("utf-8")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="trades.csv",
+    )
 
 
 @app.route("/export/equity_curve.csv")
@@ -490,43 +614,58 @@ def export_equity():
         output = io.StringIO()
         csv.writer(output).writerow(["time", "equity"])
         output.seek(0)
-        return send_file(io.BytesIO(output.getvalue().encode("utf-8")), mimetype="text/csv",
-                         as_attachment=True, download_name="equity_curve.csv")
+        return send_file(
+            io.BytesIO(output.getvalue().encode("utf-8")),
+            mimetype="text/csv",
+            as_attachment=True,
+            download_name="equity_curve.csv",
+        )
     headers = list(rows[0].keys())
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=headers)
     writer.writeheader()
     writer.writerows(rows)
     output.seek(0)
-    return send_file(io.BytesIO(output.getvalue().encode("utf-8")), mimetype="text/csv",
-                     as_attachment=True, download_name="equity_curve.csv")
+    return send_file(
+        io.BytesIO(output.getvalue().encode("utf-8")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="equity_curve.csv",
+    )
 
 
 # ===== Aliases ובריאות =====
 @app.route("/download")
 def download_csv_alias():
     if os.path.exists(TRADES_CSV):
-        return send_file(TRADES_CSV, as_attachment=True, download_name="trades.csv")
+        return send_file(
+            TRADES_CSV, as_attachment=True, download_name="trades.csv"
+        )
     abort(404, description="trades.csv not found")
 
 
 @app.route("/health")
 def health():
     st = _status_unified()
-    return jsonify(
-        {
-            "ok": os.path.exists(TRADES_CSV) or os.path.exists(EQUITY_CSV) or _db_available(),
-            "has_trades_csv": os.path.exists(TRADES_CSV),
-            "has_equity_csv": os.path.exists(EQUITY_CSV),
-            "status": st["status"],
-            "source": st.get("source"),
-            "manual_override": st.get("manual_override", False),
-            "last_update": st.get("last_update"),
-            "age_sec": st.get("age_sec"),
-            "log_dir": LOG_DIR,
-            "db_available": _db_available(),
-        }
-    ), 200
+    return (
+        jsonify(
+            {
+                "ok": os.path.exists(TRADES_CSV)
+                or os.path.exists(EQUITY_CSV)
+                or _db_available(),
+                "has_trades_csv": os.path.exists(TRADES_CSV),
+                "has_equity_csv": os.path.exists(EQUITY_CSV),
+                "status": st["status"],
+                "source": st.get("source"),
+                "manual_override": st.get("manual_override", False),
+                "last_update": st.get("last_update"),
+                "age_sec": st.get("age_sec"),
+                "log_dir": LOG_DIR,
+                "db_available": _db_available(),
+            }
+        ),
+        200,
+    )
 
 
 # ===== APIs ל-Play/Pause עדין =====
@@ -534,9 +673,13 @@ def health():
 def bot_state_get():
     state = _read_state()
     st = _status_unified()
-    return jsonify({"manual_status": state.get("manual_status"),
-                    "effective_status": st["status"],
-                    "updated_at": state.get("updated_at")})
+    return jsonify(
+        {
+            "manual_status": state.get("manual_status"),
+            "effective_status": st["status"],
+            "updated_at": state.get("updated_at"),
+        }
+    )
 
 
 @app.route("/api/bot/start", methods=["POST"])
