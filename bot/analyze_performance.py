@@ -73,3 +73,65 @@ def analyze(trades):
 
     total_trades = len(exits)
     if total_trades == 0:
+        print("⚠️ No exit trades (TP/SL/TIME) found – can't compute winrate yet.")
+    else:
+        wins = [t for t in exits if t["pnl"] > 0]
+        losses = [t for t in exits if t["pnl"] < 0]
+
+        gross_pnl = sum(t["pnl"] for t in exits)
+        avg_pnl = gross_pnl / total_trades if total_trades > 0 else 0.0
+        winrate = (len(wins) / total_trades) * 100.0 if total_trades > 0 else 0.0
+
+        print(f"Exit trades: {total_trades}")
+        print(f"Wins: {len(wins)}, Losses: {len(losses)}")
+        print(f"Winrate: {winrate:.2f}%")
+        print(f"Gross PnL (sum of exits): {gross_pnl:.2f} USDT")
+        print(f"Avg PnL per exit trade: {avg_pnl:.2f} USDT")
+
+        # פיצול לפי סוג יציאה
+        by_type = {}
+        for t in exits:
+            ttype = t["type"]
+            by_type.setdefault(ttype, []).append(t)
+
+        print("\nPnL by exit type:")
+        for ttype, arr in by_type.items():
+            s = sum(x["pnl"] for x in arr)
+            n = len(arr)
+            print(f"  {ttype}: {s:.2f} USDT over {n} trades")
+
+    # גם אם אין יציאות – ננתח equity_curve
+    print("\n====== EQUITY CURVE (approx) ======")
+    eq_points = load_equity_curve(EQUITY_CSV)
+    if not eq_points:
+        print("⚠️ No equity points to analyze.")
+        return
+
+    start_eq = eq_points[0][1]
+    end_eq = eq_points[-1][1]
+    delta = end_eq - start_eq
+
+    # max drawdown בסיסי
+    peak = eq_points[0][1]
+    max_dd = 0.0
+    for _, eq in eq_points:
+        if eq > peak:
+            peak = eq
+        dd = peak - eq
+        if dd > max_dd:
+            max_dd = dd
+
+    print(f"Start equity: {start_eq:.2f} USDT")
+    print(f"End equity:   {end_eq:.2f} USDT")
+    print(f"Delta:        {delta:.2f} USDT")
+    print(f"Max drawdown (approx from equity_curve): {max_dd:.2f} USDT")
+
+
+def main():
+    print(f"📈 Loading trades from: {TRADES_CSV}")
+    trades = load_trades(TRADES_CSV)
+    analyze(trades)
+
+
+if __name__ == "__main__":
+    main()
