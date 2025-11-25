@@ -13,7 +13,7 @@ strategy:
   # היה 4 → מעלה ל-20 כדי לצמצם רעש
   donchian_len: 20
   # היה 0 → מחזיר פילטר מגמה אמיתי
-  adx_min: 18
+  adx_min: 24
 
 trade_manager:
   atr_k_sl: 2.0      # מרחק SL = 2*ATR
