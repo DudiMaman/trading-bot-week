@@ -5,7 +5,7 @@ live_connectors:
     paper: false
     default_type: swap
     # מומלץ להתחיל רק עם BTC ו-ETH כדי להרגיע רעש
-    symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "LINK/USDT:USDT", "ADA/USDT:USDT", "ALGO/USDT:USDT", "UNI/USDT:USDT", "XRP/USDT:USDT", "BNB/USDT:USDT", "TRX/USDT:USDT", "DOGE/USDT:USDT", "XLM/USDT:USDT", "XMR/USDT:USDT", "SUI/USDT:USDT", "SHIB/USDT:USDT", "CRO/USDT:USDT"]
+    symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT", "XMR/USDT:USDT", "XRP/USDT:USDT", "SOL/USDT:USDT"]
     timeframe: "1m"
     htf_timeframe: "5m"
 
