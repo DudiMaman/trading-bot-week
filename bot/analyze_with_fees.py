@@ -1,28 +1,21 @@
 # bot/analyze_with_fees.py
 # ------------------------------------------------------------
-# ניתוח ביצועים ל-48 שעות אחרונות כולל הערכת עמלות
-# משתמש ב-bot/logs/trades.csv בלבד
+# ניתוח ביצועים על כל trades.csv כולל הערכת עמלות
 # ------------------------------------------------------------
 
 from pathlib import Path
 import csv
-import datetime as dt
 from collections import defaultdict
 
 # שיעור עמלה משוער לכל צד (כניסה או יציאה)
-FEE_RATE = 0.0001
+# לפי החישוב מהקובץ שלך – 0.1% (0.001) מהשווי לכל צד
+FEE_RATE = 0.001
 
 TRADES = Path("bot/logs/trades.csv")
 
 
-def parse_time(s: str):
-    try:
-        return dt.datetime.fromisoformat(s)
-    except Exception:
-        return None
-
-
 def pnl_of(row: dict) -> float:
+    """מחזיר PnL מהשורה (או 0 אם אין/לא תקין)."""
     try:
         return float(row.get("pnl") or 0.0)
     except Exception:
@@ -30,9 +23,6 @@ def pnl_of(row: dict) -> float:
 
 
 def main():
-    now = dt.datetime.now(dt.timezone.utc)
-    since = now - dt.timedelta(hours=HOURS_WINDOW)
-
     if not TRADES.exists():
         print("⚠️ trades.csv not found at", TRADES)
         return
@@ -41,18 +31,14 @@ def main():
     with TRADES.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            t = parse_time(row.get("time", ""))
-            if not t or t < since:
-                continue
             rows.append(row)
 
-    print(f"📊 FEE-AWARE PERFORMANCE (last {HOURS_WINDOW}h)")
-    print(f"Window since: {since.isoformat()} (UTC)")
-    print(f"Total log rows in window: {len(rows)}")
+    print("📊 FEE-AWARE PERFORMANCE (FULL HISTORY)")
+    print(f"Total log rows in trades.csv: {len(rows)}")
     print()
 
     if not rows:
-        print("⚠️ No trades in window.")
+        print("⚠️ No trades found.")
         return
 
     enter_trades = [r for r in rows if r.get("type") == "ENTER"]
@@ -61,7 +47,7 @@ def main():
     # PnL גולמי (ללא עמלות) – רק מטריידי יציאה
     gross_pnl = sum(pnl_of(r) for r in exit_trades)
 
-    # מחזור כולל (Notional volume) – כל שורה בחלון הזמן
+    # מחזור כולל (Notional volume) – *כל* השורות (כניסות + יציאות)
     total_volume = 0.0
     for row in rows:
         try:
@@ -75,7 +61,7 @@ def main():
     est_fees = total_volume * FEE_RATE
     net_pnl = gross_pnl - est_fees
 
-    print("====== GLOBAL SUMMARY ======")
+    print("====== GLOBAL SUMMARY (FULL HISTORY) ======")
     print(f"ENTER trades: {len(enter_trades)}")
     print(f"Exit trades:  {len(exit_trades)}")
     print(f"Gross PnL (exits only): {gross_pnl:.4f} USDT")
@@ -107,7 +93,7 @@ def main():
 
     total_vol_nonzero = sum(side_volume.values()) or 1.0
 
-    print("====== BY SIDE (LONG / SHORT) ======")
+    print("====== BY SIDE (LONG / SHORT) – FULL HISTORY ======")
     print(f"{'side':6} {'volume':>12} {'gross_pnl':>12} {'est_fees':>12} {'net_pnl':>12}")
     for side in sorted(side_volume.keys()):
         vol = side_volume[side]
