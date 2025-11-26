@@ -6,8 +6,8 @@ live_connectors:
     default_type: swap
     # מומלץ להתחיל רק עם BTC ו-ETH כדי להרגיע רעש
     symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT", "XMR/USDT:USDT", "XRP/USDT:USDT", "SOL/USDT:USDT"]
-    timeframe: "1m"
-    htf_timeframe: "5m"
+    timeframe: "5m"
+    htf_timeframe: "15m"
 
 strategy:
   # היה 4 → מעלה ל-20 כדי לצמצם רעש
