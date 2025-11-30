@@ -2,25 +2,23 @@
 # ------------------------------------------------------------
 # Trading bot (weekly loop) with:
 # - Safe key filtering for DonchianTrendADXRSI / TradeManager
-# - AUTO symbol discovery (Bybit via CCXT)
-# - Valid symbol filtering + min-qty/min-notional/precision
-# - Fallback signal logic (Donchian breakout) if strategy yields no signals
-# - Robust try/except and dual logging (CSV + optional Postgres)
-#
-# ⚠️ WARNING: this version sends REAL MARKET ORDERS to Bybit using your API keys.
-# Use at your own risk and only with money you can afford to lose.
+# - Standardized OHLCV (no KeyError('high'))
+# - Support for CCXT (e.g. Bybit) and Alpaca
+# - Basic TP/SL, time exit and equity logging
 # ------------------------------------------------------------
 
 import os
 import sys
 import math
 import time
-import yaml
 import csv as _csv
 import inspect
-import pandas as pd
 from datetime import datetime, timezone
+
+import yaml
+import pandas as pd
 from dotenv import load_dotenv
+
 import ccxt
 
 from bot.safety import guard_open
@@ -28,7 +26,6 @@ from bot.safety import guard_open
 try:
     from bot.monitor import start_heartbeat
 except Exception:
-    # בלם בטיחות: אם יש בעיה ב-monitor, לא מפילים את ה-worker
     def start_heartbeat(*args, **kwargs):
         return None
 
@@ -56,7 +53,7 @@ EQUITY_CSV = os.path.join(LOG_DIR, "equity_curve.csv")
 
 
 # ------------------------
-# Utilities
+# CSV / misc utils
 # ------------------------
 def write_csv(path: str, header: list[str], rows: list[list]):
     new_file = not os.path.exists(path)
@@ -86,9 +83,6 @@ def determine_amount_step(market: dict) -> float:
 
 
 def get_min_amount_from_market(market: dict) -> float:
-    """
-    מחלץ את כמות המינימום למסחר מהשוק, אם קיימת.
-    """
     try:
         lims = (market or {}).get("limits", {}) or {}
         amt = (lims.get("amount") or {}).get("min")
@@ -98,12 +92,6 @@ def get_min_amount_from_market(market: dict) -> float:
 
 
 def normalize_position_qty(conn, symbol: str, qty: float) -> float:
-    """
-    מנקה שאריות כמות קטנות מדי לפי המידע מהבורסה:
-    - מנרמל לפי ה-step (precision).
-    - אם אחרי הנירמול הכמות קטנה מהמינימום או ממש זעירה – מחזיר 0.
-    כך לא נשארות פוזיציות 'אבק' שמנסות להיסגר לנצח.
-    """
     if qty <= 0:
         return 0.0
 
@@ -122,30 +110,98 @@ def normalize_position_qty(conn, symbol: str, qty: float) -> float:
     if step > 0:
         qty = round_step(qty, step)
 
-    # אם יש min_qty מהבורסה – משתמשים בו, אחרת נופלים לפולבאק קטן
     threshold = min_qty if min_qty > 0 else 1e-8
-
     if qty < threshold:
         return 0.0
 
     return qty
 
 
-# ---------- NEW: helpers for live position size (SPOT + FUTURES) ----------
+# ------------------------
+# OHLCV standardization
+# ------------------------
+def standardize_ohlcv(df_raw) -> pd.DataFrame:
+    """
+    Ensures DataFrame with columns: open, high, low, close [, volume].
+    Supports:
+      - list/tuple of OHLCV rows (ccxt-style)
+      - DataFrame with different column names (o/h/l/c/v, etc.)
+    Raises ValueError if after cleaning there's no data.
+    """
+    if df_raw is None:
+        raise ValueError("standardize_ohlcv: got empty OHLCV dataframe (None)")
+
+    # Sequence from exchange
+    if not isinstance(df_raw, pd.DataFrame):
+        if not df_raw:
+            raise ValueError("standardize_ohlcv: got empty OHLCV dataframe (sequence)")
+        cols = ["timestamp", "open", "high", "low", "close", "volume"]
+        df = pd.DataFrame(df_raw, columns=cols[: len(df_raw[0])])
+    else:
+        df = df_raw.copy()
+
+    if df.empty:
+        raise ValueError("standardize_ohlcv: got empty OHLCV dataframe")
+
+    lower_cols = {c.lower(): c for c in df.columns}
+    rename_map = {}
+
+    mapping = {
+        "open": ["open", "o"],
+        "high": ["high", "h"],
+        "low":  ["low", "l"],
+        "close":["close", "c"],
+        "volume":["volume", "v"],
+    }
+
+    for target, candidates in mapping.items():
+        for cand in candidates:
+            if cand in lower_cols:
+                rename_map[lower_cols[cand]] = target
+                break
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    # set time index
+    if "time" in df.columns:
+        df = df.set_index("time")
+    elif "timestamp" in df.columns:
+        df["time"] = pd.to_datetime(df["timestamp"], unit="ms", errors="coerce")
+        df = df.set_index("time")
+
+    required = {"open", "high", "low", "close"}
+    if not required.issubset(set(df.columns)):
+        missing = required - set(df.columns)
+        raise ValueError(f"standardize_ohlcv: missing required columns {missing}")
+
+    cols_out = ["open", "high", "low", "close"]
+    if "volume" in df.columns:
+        cols_out.append("volume")
+
+    df = df[cols_out].dropna(how="any")
+    if df.empty:
+        raise ValueError("standardize_ohlcv: all rows became NaN after cleaning")
+
+    return df
+
+
+# ------------------------
+# Live position helpers
+# ------------------------
 def get_live_position_qty(conn, symbol: str, side: str):
     """
-    מנסה לקרוא את גודל הפוזיציה האמיתי מהבורסה.
-    - קודם מנסה FUTURES דרך fetch_positions (long/short).
-    - אם לא נמצא/נכשל, מנסה SPOT דרך fetch_balance (כמות BASE).
-    מחזיר:
-      qty (float או None), market_type ("future"/"spot")
+    Try to fetch real position size:
+    - first via futures positions
+    - then via spot balance (base asset)
+    Returns (qty, market_type) where market_type in {"future", "spot"}.
     """
     if conn is None or not hasattr(conn, "exchange"):
         return None, "spot"
 
     ex = conn.exchange
 
-    # קודם מנסים FUTURES
+    # futures
     try:
         positions = ex.fetch_positions([symbol])
         target_side = "long" if side == "long" else "short"
@@ -162,9 +218,9 @@ def get_live_position_qty(conn, symbol: str, side: str):
             if qty > 0:
                 return qty, "future"
     except Exception:
-        pass  # אם אין פוזיציות או זה לא FUTURES – ננסה SPOT
+        pass
 
-    # SPOT – בודקים כמות BASE ב-balance
+    # spot
     try:
         market = ex.market(symbol)
         base = market.get("base") or symbol.split("/")[0]
@@ -178,13 +234,6 @@ def get_live_position_qty(conn, symbol: str, side: str):
 
 
 def compute_close_qty(conn, symbol: str, side: str, requested_qty: float, fallback_qty: float):
-    """
-    מחשב כמה אפשר לסגור בפועל:
-    - לא מבקש לסגור יותר ממה שבאמת יש (live position).
-    - אם אי אפשר לקרוא מהבורסה – משתמש ב-fallback (pos["qty"]).
-    מחזיר:
-      close_qty, live_qty
-    """
     if requested_qty <= 0:
         return 0.0, fallback_qty
 
@@ -201,18 +250,19 @@ def compute_close_qty(conn, symbol: str, side: str, requested_qty: float, fallba
         return 0.0, live_qty
 
     return close_qty, live_qty
-# --------------------------------------------------------------------------
 
 
+# ------------------------
+# Orders
+# ------------------------
 def place_order(conn, symbol: str, side: str, qty: float, reduce_only: bool = False):
     """
-    מבצע פקודת מרקט:
-    - ב־בורסות CCXT (Bybit וכו') דרך exchange.create_order
-    - באלפאקה דרך AlpacaConnector.create_market_order
-    side: "buy" / "sell"
-    מחזיר order_id אם הצליח, אחרת None.
+    Market order:
+      - Alpaca via AlpacaConnector.create_market_order
+      - CCXT via exchange.create_order
+    side: "buy"/"sell"
     """
-    # 1) Alpaca – שימוש בקונקטור הייעודי
+    # Alpaca path
     try:
         if AlpacaConnector is not None and isinstance(conn, AlpacaConnector):
             try:
@@ -228,10 +278,9 @@ def place_order(conn, symbol: str, side: str, qty: float, reduce_only: bool = Fa
                 print(f"[ORDER ERROR][ALPACA] {symbol} {side} {qty}: {e}")
                 return None
     except NameError:
-        # AlpacaConnector לא קיים במודול – מתעלמים וממשיכים ל-CCXT
         pass
 
-    # 2) CCXT (Bybit וכו')
+    # CCXT path
     try:
         from ccxt.base.errors import ExchangeError
     except Exception:
@@ -262,84 +311,15 @@ def place_order(conn, symbol: str, side: str, qty: float, reduce_only: bool = Fa
     return None
 
 
-def standardize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    מיישר DataFrame של OHLCV כך שתמיד יהיו העמודות:
-      time (index), open, high, low, close, volume
-
-    תומך גם במקרה שהקונקטור מחזיר:
-    - שמות עמודות באנגלית באותיות גדולות
-    - אינדקסים מספריים (0..5) מסידרת OHLCV
-    """
-    if df is None or len(df) == 0:
-        raise ValueError("standardize_ohlcv: got empty OHLCV dataframe")
-
-    df = df.copy()
-
-    # אם האינדקס לא דמוי זמן, נניח שהעמודה הראשונה היא time
-    if not isinstance(df.index, pd.DatetimeIndex):
-        if "time" in df.columns:
-            df["time"] = pd.to_datetime(df["time"], unit="ms", errors="coerce")
-            df = df.set_index("time")
-        elif 0 in df.columns:
-            df["time"] = pd.to_datetime(df[0], unit="ms", errors="coerce")
-            df = df.set_index("time")
-        else:
-            df.index = pd.to_datetime(df.index, errors="coerce")
-
-    col_map = {c.lower(): c for c in df.columns if isinstance(c, str)}
-
-    def _get_col(*candidates):
-        # לוקח את העמודה הראשונה שקיימת בין המועמדות
-        for cand in candidates:
-            if isinstance(cand, int) and cand in df.columns:
-                return cand
-            if isinstance(cand, str) and cand.lower() in col_map:
-                return col_map[cand.lower()]
-        return None
-
-    o_col = _get_col("open", "o", 1)
-    h_col = _get_col("high", "h", 2)
-    l_col = _get_col("low", "l", 3)
-    c_col = _get_col("close", "c", 4)
-    v_col = _get_col("volume", "v", 5)
-
-    missing = [name for name, col in [
-        ("open", o_col),
-        ("high", h_col),
-        ("low", l_col),
-        ("close", c_col),
-        ("volume", v_col),
-    ] if col is None]
-
-    if missing:
-        raise KeyError(f"standardize_ohlcv: missing OHLCV columns: {missing}. got: {list(df.columns)}")
-
-    out = pd.DataFrame(
-        {
-            "open": df[o_col].astype(float),
-            "high": df[h_col].astype(float),
-            "low": df[l_col].astype(float),
-            "close": df[c_col].astype(float),
-            "volume": df[v_col].astype(float),
-        },
-        index=df.index,
-    )
-    return out
-
-
 def attach_atr(ltf_df: pd.DataFrame) -> pd.Series:
     return calc_atr(ltf_df, 14)
 
 
 def ensure_signal_columns(
-    feats: pd.DataFrame, ltf_df: pd.DataFrame, donchian_len: int
+    feats: pd.DataFrame,
+    ltf_df: pd.DataFrame,
+    donchian_len: int,
 ) -> pd.DataFrame:
-    """
-    Fallback: אם אין עמודות סיגנל, או שהכול False, נחשב סיגנל פריצה דונצ'יאן בסיסי.
-    long_setup: close פורץ את max(high, N)
-    short_setup: close יורד מתחת ל-min(low, N)
-    """
     feats = feats.copy()
     need_fallback = False
     if "long_setup" not in feats.columns or "short_setup" not in feats.columns:
@@ -356,7 +336,6 @@ def ensure_signal_columns(
         long_setup = close > highs.shift(1)
         short_setup = close < lows.shift(1)
 
-        # התאמת האינדקס: נאחד על פי ה־index של feats
         tmp = pd.DataFrame(index=feats.index)
         tmp["long_setup"] = long_setup.reindex(feats.index).fillna(False)
         tmp["short_setup"] = short_setup.reindex(feats.index).fillna(False)
@@ -390,16 +369,13 @@ def append_trade(
     pnl: float | None,
     equity: float,
 ):
-    """
-    עוטפת את הלוג של טרייד אחד, כדי שלא נכתוב את אותו rows_trades.append בכל מקום.
-    """
     rows_trades.append(
         [
             now_utc.isoformat(),
             connector,
             symbol,
-            event_type,  # ENTER / TP1 / TP2 / SL / TIME
-            side,        # long / short
+            event_type,
+            side,
             f"{price:.8f}",
             f"{qty:.8f}",
             "" if pnl is None else f"{pnl:.2f}",
@@ -409,17 +385,16 @@ def append_trade(
 
 
 # ------------------------
-# Main
+# main
 # ------------------------
 def main():
     hb_thread = start_heartbeat()
 
-    # 1) Load env + config
     load_dotenv()
     with open(os.path.join(THIS_DIR, "config.yml"), "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
 
-    # 2) Optional DB
+    # DB (optional)
     db = None
     database_url = os.getenv("DATABASE_URL")
     if database_url:
@@ -429,7 +404,7 @@ def main():
             print(f"[WARN] DB init failed: {e}")
             db = None
 
-    # 3) Strategy / TradeManager (safe filtering)
+    # Strategy & trade manager (safe kwargs)
     raw_s = cfg.get("strategy", {}) or {}
     accepted_s = set(inspect.signature(DonchianTrendADXRSI).parameters.keys())
     clean_s = {k: v for k, v in raw_s.items() if k in accepted_s}
@@ -447,7 +422,7 @@ def main():
         print(f"⚠️ Ignoring unknown trade_manager keys: {unknown_t}")
     tm = TradeManager(**clean_t)
 
-    # 4) Portfolio – משיכת equity מבייביט כשמוגדר "auto"
+    # Portfolio & equity
     portfolio = cfg.get("portfolio", {}) or {}
     equity_cfg = portfolio.get("equity0", "auto")
 
@@ -457,23 +432,19 @@ def main():
         equity = 0.0
         try:
             if not api_key or not api_secret:
-                print("⚠️ BYBIT_API_KEY/SECRET חסרים – מתחיל עם equity = 0")
+                print("⚠️ BYBIT_API_KEY/SECRET missing – starting with equity = 0")
             else:
                 exchange = ccxt.bybit(
                     {
                         "apiKey": api_key,
                         "secret": api_secret,
                         "enableRateLimit": True,
-                        "options": {
-                            "defaultType": "swap",
-                        },
+                        "options": {"defaultType": "swap"},
                     }
                 )
-
                 equity_unified = 0.0
                 equity_spot = 0.0
 
-                # ניסיון לקרוא Unified
                 try:
                     bal_u = exchange.fetch_balance({"type": "UNIFIED"})
                     usdt_u = bal_u.get("USDT") or {}
@@ -481,9 +452,8 @@ def main():
                         usdt_u.get("total") or usdt_u.get("free") or 0.0
                     )
                 except Exception as e_u:
-                    print(f"⚠️ fetch_balance UNIFIED נכשל: {e_u}")
+                    print(f"⚠️ fetch_balance UNIFIED failed: {e_u}")
 
-                # ניסיון לקרוא Spot
                 try:
                     bal_s = exchange.fetch_balance()
                     usdt_s = bal_s.get("USDT") or {}
@@ -491,7 +461,7 @@ def main():
                         usdt_s.get("total") or usdt_s.get("free") or 0.0
                     )
                 except Exception as e_s:
-                    print(f"⚠️ fetch_balance SPOT נכשל: {e_s}")
+                    print(f"⚠️ fetch_balance SPOT failed: {e_s}")
 
                 equity = max(equity_unified, equity_spot)
                 print(
@@ -499,7 +469,7 @@ def main():
                     f"SPOT={equity_spot} USDT, used={equity}"
                 )
         except Exception as e:
-            print(f"⚠️ כשל בשליפת יתרה חיה מבייביט, מתחיל עם 0. שגיאה: {e}")
+            print(f"⚠️ failed to fetch live balance from Bybit, starting with 0. Error: {e}")
             equity = 0.0
     else:
         try:
@@ -513,31 +483,23 @@ def main():
         max_position_pct=float(portfolio.get("max_position_pct", 0.70)),
     )
 
-    # מזהה קונפיג לגרסה זו (לטבלת live_trades)
     config_id = os.getenv("BOT_CONFIG_ID", "SAFE_V1")
 
-    # 5) Initial equity log
+    # initial equity log
     now_utc = datetime.now(timezone.utc)
-    write_csv(
-        EQUITY_CSV,
-        ["time", "equity"],
-        [[now_utc.isoformat(), f"{equity:.2f}"]],
-    )
+    write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
     if db:
         try:
-            db.write_equity(
-                {"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")}
-            )
+            db.write_equity({"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")})
         except Exception as e:
             print(f"[WARN] DB write_equity init failed: {e}")
 
-    # 6) Connectors + AUTO
+    # Connectors
     conns: list[tuple[dict, object]] = []
     live_connectors = cfg.get("live_connectors", []) or []
     for c in live_connectors:
         ctype = c.get("type", "ccxt")
 
-        # 6.1 יצירת הקונקטור לפי type
         if ctype == "ccxt":
             conn = CCXTConnector(
                 c.get("exchange_id", "bybit"),
@@ -553,16 +515,13 @@ def main():
             print(f"ℹ️ Unknown connector type '{ctype}' — skipping.")
             continue
 
-        # init connector
         try:
             conn.init()
         except Exception as e:
             print(f"❌ init() failed for connector {c.get('name','?')}: {repr(e)}")
             continue
 
-        # 6.2 טיפול נפרד: CCXT (Bybit/Binance וכו') לעומת Alpaca
         if ctype == "ccxt":
-            # apply Bybit API keys from env (for real-money mode)
             api_key = os.getenv("BYBIT_API_KEY")
             api_secret = os.getenv("BYBIT_API_SECRET")
             if api_key and api_secret:
@@ -574,7 +533,6 @@ def main():
             else:
                 print("⚠️ BYBIT_API_KEY/BYBIT_API_SECRET not found in environment")
 
-            # load markets
             try:
                 markets = conn.exchange.load_markets()
             except Exception as e:
@@ -605,21 +563,18 @@ def main():
                     f"✅ Connector '{c.get('name','ccxt')}' loaded {len(valid_syms)} valid symbols "
                     f"(of {len(cfg_syms)} requested)."
                 )
-
-        elif ctype == "alpaca":
-            # באלפאקה לא משתמשים ב-load_markets ולא מסננים לפי exchange.symbols
+        else:
             requested_syms = list(c.get("symbols", []) or [])
             valid_syms = requested_syms
             print(
                 f"✅ Alpaca connector '{c.get('name','alpaca')}' using {len(valid_syms)} symbols from config."
             )
 
-        # 6.3 שמירה במבנה האחיד של conns
         c_local = dict(c)
         c_local["symbols"] = valid_syms
         conns.append((c_local, conn))
 
-    # 7) Init CSV trades header
+    # init trades CSV header
     write_csv(
         TRADES_CSV,
         ["time", "connector", "symbol", "type", "side", "price", "qty", "pnl", "equity"],
@@ -629,22 +584,21 @@ def main():
     open_positions: dict = {}
     cooldowns: dict = {}
     last_bar_ts: dict = {}
+
     start_time = time.time()
     SECONDS_IN_WEEK = 7 * 24 * 60 * 60
 
-    # 8) Main loop
     while True:
         now_utc = datetime.now(timezone.utc)
         rows_trades: list[list] = []
         snapshots: dict = {}
 
-        # Fetch & features
+        # ---------------- fetch & features ----------------
         for c_cfg, conn in conns:
             tf = c_cfg.get("timeframe", "1m")
             htf = c_cfg.get("htf_timeframe", "5m")
             for sym in c_cfg.get("symbols", []):
                 try:
-                    # כאן מיישרים את ה־OHLCV לפני המעבר לסטרטגיה
                     ltf_df_raw = conn.fetch_ohlcv(sym, tf, limit=600)
                     htf_df_raw = conn.fetch_ohlcv(sym, htf, limit=600)
 
@@ -659,7 +613,7 @@ def main():
                     print(f"⏭️ skip {sym}: {repr(e)}")
                     continue
 
-        # בדיקה אם התקדם בר חדש כלשהו; אם לא – נרדם רגע ורק נרשום equity
+        # check new bar
         progressed_any = False
         for key, row in snapshots.items():
             ts = row.name
@@ -672,23 +626,15 @@ def main():
             if time.time() - start_time >= SECONDS_IN_WEEK:
                 break
 
-            write_csv(
-                EQUITY_CSV,
-                ["time", "equity"],
-                [[now_utc.isoformat(), f"{equity:.2f}"]],
-            )
-
+            write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
             if db:
                 try:
-                    db.write_equity(
-                        {"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")}
-                    )
+                    db.write_equity({"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")})
                 except Exception as e:
                     print(f"[WARN] DB write_equity loop failed: {e}")
-
             continue
 
-        # Manage positions (TP1 / TP2 / SL / TIME)
+        # ---------------- manage existing positions ----------------
         to_close = []
         for key, pos in list(open_positions.items()):
             row = snapshots.get(key)
@@ -697,15 +643,19 @@ def main():
 
             price = float(row["close"])
             atr_now = float(row["atr"]) if pd.notna(row["atr"]) else None
-            side = pos["side"]          # "long" / "short"
+            side = pos["side"]
             entry = pos["entry"]
             qty = pos["qty"]
             R = pos["R"]
-            conn = pos.get("conn")      # connector instance
+            conn = pos.get("conn")
 
-            # trailing SL by ATR
+            # trailing SL
             if atr_now:
-                trail = tm.trail_level(side, price, atr_now, after_tp1=pos["tp1_done"])
+                trail = (
+                    price - tm.atr_trail * atr_now
+                    if side == "long"
+                    else price + tm.atr_trail * atr_now
+                )
                 if side == "long":
                     pos["sl"] = max(pos["sl"], trail)
                 else:
@@ -720,7 +670,7 @@ def main():
                     pos["sl"] = min(pos["sl"], entry)
                     pos["moved_to_be"] = True
 
-            # ---- TP1 (partial close) ----
+            # TP1
             if (not pos["tp1_done"]) and (
                 (side == "long" and price >= pos["tp1"])
                 or (side == "short" and price <= pos["tp1"])
@@ -732,7 +682,6 @@ def main():
                     conn, key[1], side, requested_close_qty, pos["qty"]
                 )
 
-                # בדיקת אבק: אם הכמות האמיתית קטנה מהמינימום – מסמנים כסגור ומתעלמים
                 min_qty = 0.0
                 if conn is not None and hasattr(conn, "exchange"):
                     try:
@@ -748,7 +697,7 @@ def main():
                     and live_qty < min_qty
                 ):
                     print(
-                        f"[TP1] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
+                        f"[TP1] dust on {key}: live_qty {live_qty} < min_qty {min_qty} – marking closed"
                     )
                     pos["qty"] = 0.0
                     pos["tp1_done"] = True
@@ -769,14 +718,11 @@ def main():
                     continue
 
                 if close_qty <= 0:
-                    print(f"[TP1] no qty available to close for {key}")
+                    print(f"[TP1] no qty to close for {key}")
                 else:
+                    order_id = None
                     if conn is not None:
-                        order_id = place_order(
-                            conn, key[1], exit_side, close_qty, reduce_only=True
-                        )
-                    else:
-                        order_id = None
+                        order_id = place_order(conn, key[1], exit_side, close_qty, reduce_only=True)
 
                     if not order_id:
                         print(f"[TP1] order failed for {key}")
@@ -809,7 +755,7 @@ def main():
                             equity,
                         )
 
-            # ---- TP2 (partial close / rest) ----
+            # TP2
             if (not pos["tp2_done"]) and (
                 (side == "long" and price >= pos["tp2"])
                 or (side == "short" and price <= pos["tp2"])
@@ -821,7 +767,6 @@ def main():
                     conn, key[1], side, requested_close_qty, pos["qty"]
                 )
 
-                # אבק בפוזיציה
                 min_qty = 0.0
                 if conn is not None and hasattr(conn, "exchange"):
                     try:
@@ -837,7 +782,7 @@ def main():
                     and live_qty < min_qty
                 ):
                     print(
-                        f"[TP2] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
+                        f"[TP2] dust on {key}: live_qty {live_qty} < min_qty {min_qty} – marking closed"
                     )
                     pos["qty"] = 0.0
                     pos["tp2_done"] = True
@@ -858,14 +803,11 @@ def main():
                     continue
 
                 if close_qty <= 0:
-                    print(f"[TP2] no qty available to close for {key}")
+                    print(f"[TP2] no qty to close for {key}")
                 else:
+                    order_id = None
                     if conn is not None:
-                        order_id = place_order(
-                            conn, key[1], exit_side, close_qty, reduce_only=True
-                        )
-                    else:
-                        order_id = None
+                        order_id = place_order(conn, key[1], exit_side, close_qty, reduce_only=True)
 
                     if not order_id:
                         print(f"[TP2] order failed for {key}")
@@ -898,7 +840,7 @@ def main():
                             equity,
                         )
 
-            # ---- SL (stop-loss exit of all remaining qty) ----
+            # SL
             if (side == "long" and price <= pos["sl"]) or (
                 side == "short" and price >= pos["sl"]
             ):
@@ -909,7 +851,6 @@ def main():
                     conn, key[1], side, requested_close_qty, pos["qty"]
                 )
 
-                # אבק בפוזיציה
                 min_qty = 0.0
                 if conn is not None and hasattr(conn, "exchange"):
                     try:
@@ -925,7 +866,7 @@ def main():
                     and live_qty < min_qty
                 ):
                     print(
-                        f"[SL] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
+                        f"[SL] dust on {key}: live_qty {live_qty} < min_qty {min_qty} – marking closed"
                     )
                     pos["qty"] = 0.0
                     trade_id = pos.get("trade_id")
@@ -944,12 +885,10 @@ def main():
                     continue
 
                 if close_qty <= 0 or conn is None:
-                    print(f"[SL] no qty available to close for {key}")
+                    print(f"[SL] no qty to close for {key}")
                     order_id = None
                 else:
-                    order_id = place_order(
-                        conn, key[1], exit_side, close_qty, reduce_only=True
-                    )
+                    order_id = place_order(conn, key[1], exit_side, close_qty, reduce_only=True)
 
                 if not order_id:
                     print(f"[SL] order failed for {key}")
@@ -997,7 +936,7 @@ def main():
 
                     to_close.append(key)
 
-            # ---- TIME exit (if max bars reached and still open) ----
+            # TIME exit
             pos["bars"] += 1
             if pos["bars"] >= tm.max_bars_in_trade and not pos["tp2_done"]:
                 exit_side = "sell" if side == "long" else "buy"
@@ -1007,7 +946,6 @@ def main():
                     conn, key[1], side, requested_close_qty, pos["qty"]
                 )
 
-                # אבק בפוזיציה
                 min_qty = 0.0
                 if conn is not None and hasattr(conn, "exchange"):
                     try:
@@ -1023,7 +961,7 @@ def main():
                     and live_qty < min_qty
                 ):
                     print(
-                        f"[TIME] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
+                        f"[TIME] dust on {key}: live_qty {live_qty} < min_qty {min_qty} – marking closed"
                     )
                     pos["qty"] = 0.0
                     trade_id = pos.get("trade_id")
@@ -1042,12 +980,10 @@ def main():
                     continue
 
                 if close_qty <= 0 or conn is None:
-                    print(f"[TIME] no qty available to close for {key}")
+                    print(f"[TIME] no qty to close for {key}")
                     order_id = None
                 else:
-                    order_id = place_order(
-                        conn, key[1], exit_side, close_qty, reduce_only=True
-                    )
+                    order_id = place_order(conn, key[1], exit_side, close_qty, reduce_only=True)
 
                 if not order_id:
                     print(f"[TIME] order failed for {key}")
@@ -1098,7 +1034,7 @@ def main():
         for key in to_close:
             open_positions.pop(key, None)
 
-        # ---- Portfolio exposure (notional) & remaining capacity ----
+        # exposure
         portfolio_notional = 0.0
         for key2, pos2 in open_positions.items():
             row2 = snapshots.get(key2)
@@ -1110,12 +1046,11 @@ def main():
         max_portfolio_notional = equity * rm.max_position_pct
         remaining_notional = max(0.0, max_portfolio_notional - portfolio_notional)
 
-        # Entries (open new positions – REAL MARKET ORDERS)
+        # ---------------- new entries ----------------
         for c_cfg, conn in conns:
             for sym in c_cfg.get("symbols", []):
                 key = (c_cfg.get("name", "ccxt"), sym)
 
-                # אם כבר אין תקציב חשיפה – לא פותחים פוזיציות חדשות
                 if remaining_notional <= 0:
                     continue
 
@@ -1146,13 +1081,11 @@ def main():
                 if R <= 0:
                     continue
 
-                # הגדרות כמות/מינימום – שונות ל-CCXT (Bybit וכו') ול-Alpaca
                 ctype = c_cfg.get("type", "ccxt")
 
                 if ctype == "alpaca":
-                    # באלפאקה אין לנו market דרך CCXT, אז נלך על ברירות מחדל פשוטות:
                     market = {}
-                    step = 1.0          # נסחור בכמויות של יחידה שלמה (מניה/קריפטו)
+                    step = 1.0
                     min_qty = None
                     min_cost = None
                 else:
@@ -1167,10 +1100,6 @@ def main():
                     min_qty = (lims.get("amount") or {}).get("min")
                     min_cost = (lims.get("cost") or {}).get("min")
 
-                # sizing לפי:
-                # 1) סיכון לעסקה
-                # 2) תקרת חשיפה כללית
-                # 3) התקציב הפנוי כרגע (remaining_notional)
                 qty_risk = (equity * rm.risk_per_trade) / max(R, 1e-12)
                 qty_cap_equity = (equity * rm.max_position_pct) / max(price, 1e-9)
                 qty_cap_remaining = remaining_notional / max(price, 1e-9)
@@ -1200,14 +1129,12 @@ def main():
                     else price - tm.r2_R * R
                 )
 
-                # REAL entry order
                 order_side = "buy" if side == "long" else "sell"
                 order_id = place_order(conn, sym, order_side, qty, reduce_only=False)
                 if not order_id:
                     print(f"[ENTER] order failed for {key}")
                     continue
 
-                # סיכון בדולרים (1R = מרחק בין כניסה ל-SL)
                 risk_usd = R * qty
 
                 trade_id = None
@@ -1226,7 +1153,6 @@ def main():
                     except Exception as e:
                         print(f"[WARN] open_live_trade failed for {key}: {e}")
 
-                # מעדכנים את התקציב הפנוי לפי הנומינל של הטרייד החדש
                 entry_notional = qty * price
                 remaining_notional = max(0.0, remaining_notional - entry_notional)
 
@@ -1273,16 +1199,10 @@ def main():
                 except Exception as e:
                     print(f"[WARN] DB write_trades failed: {e}")
 
-        write_csv(
-            EQUITY_CSV,
-            ["time", "equity"],
-            [[now_utc.isoformat(), f"{equity:.2f}"]],
-        )
+        write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
         if db:
             try:
-                db.write_equity(
-                    {"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")}
-                )
+                db.write_equity({"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")})
             except Exception as e:
                 print(f"[WARN] DB write_equity loop failed: {e}")
 
