@@ -1,11 +1,23 @@
 live_connectors:
+  - name: alpaca_paper
+    type: ccxt
+    exchange_id: alpaca
+    paper: true              # מצב פייפר – חשוב בשלב הזה
+    default_type: null       # פתוח לכל סוגי הנכסים שאלפקה תומכת בהם (מניות, קריפטו וכו')
+    # שימוש בכל מה שאלפקה מציעה – מניות + קריפטו + ETF וכו'
+    # בהטמעה בפועל: אם symbols == ["ALL"] → לטעון את כל ה-markets מ-fetch_markets()
+    symbols: ["ALL"]
+    timeframe: "5m"
+    htf_timeframe: "15m"
+
+  # אפשר להשאיר את Bybit כרגע פעיל, או לכבות אותו (להוריד/להעיר החוצה) אם אתה רוצה תקופה רק אלפקה
   - name: bybit
     type: ccxt
     exchange_id: bybit
     paper: false
     default_type: swap
-    # מומלץ להתחיל רק עם BTC ו-ETH כדי להרגיע רעש
-    symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT", "XMR/USDT:USDT", "XRP/USDT:USDT", "SOL/USDT:USDT"]
+    # מומלץ להתחיל רק עם BTC ו-ETH כדי להרגיע רעש, אבל כרגע הכל כמו שהיה
+    symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT"]
     timeframe: "5m"
     htf_timeframe: "15m"
 
@@ -19,8 +31,8 @@ trade_manager:
   atr_k_sl: 2.0      # מרחק SL = 2*ATR
   r1_R: 1.0          # TP1 במרחק 1R
   r2_R: 2.0          # TP2 במרחק 2R
-  p1_pct: 0.3        # סוגרים 50% ב-TP1
-  p2_pct: 0.7        # סוגרים 50% ב-TP2
+  p1_pct: 0.3        # סוגרים 30% ב-TP1
+  p2_pct: 0.7        # סוגרים 70% ב-TP2
   be_after_R: 1.0    # מעביר SL ל-BE אחרי 1R
   max_bars_in_trade: 180   # אם קיים ערך אחר – אפשר להשאיר, לא קריטי כרגע
 
