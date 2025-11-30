@@ -11,15 +11,15 @@ live_connectors:
     htf_timeframe: "15m"
 
   # אפשר להשאיר את Bybit כרגע פעיל, או לכבות אותו (להוריד/להעיר החוצה) אם אתה רוצה תקופה רק אלפקה
-  - name: bybit
-    type: ccxt
-    exchange_id: bybit
-    paper: false
-    default_type: swap
+  #- name: bybit
+  #  type: ccxt
+  #  exchange_id: bybit
+  #  paper: false
+  #  default_type: swap
     # מומלץ להתחיל רק עם BTC ו-ETH כדי להרגיע רעש, אבל כרגע הכל כמו שהיה
-    symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT"]
-    timeframe: "5m"
-    htf_timeframe: "15m"
+  #  symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT"]
+  #  timeframe: "5m"
+  #  htf_timeframe: "15m"
 
 strategy:
   # היה 4 → מעלה ל-20 כדי לצמצם רעש
