@@ -591,15 +591,16 @@ def main():
                 last_bar_ts[key] = ts
                 progressed_any = True
 
-        if not progressed_any:
+                if not progressed_any:
             time.sleep(15)
             if time.time() - start_time >= SECONDS_IN_WEEK:
                 break
-                write_csv(
-        EQUITY_CSV,
-        ["time", "equity"],
-        [[now_utc.isoformat(), f"{equity:.2f}"]],
-    )
+
+            write_csv(
+                EQUITY_CSV,
+                ["time", "equity"],
+                [[now_utc.isoformat(), f"{equity:.2f}"]],
+            )
 
             if db:
                 try:
@@ -608,6 +609,7 @@ def main():
                     )
                 except Exception as e:
                     print(f"[WARN] DB write_equity loop failed: {e}")
+
             continue
 
         # Manage positions (TP1 / TP2 / SL / TIME)
