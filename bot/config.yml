@@ -272,8 +272,8 @@ live_connectors:
   #   htf_timeframe: "15m"
 
 strategy:
-  donchian_len: 20
-  adx_min: 24
+  donchian_len: 14
+  adx_min: 18
 
 trade_manager:
   atr_k_sl: 2.0
@@ -282,9 +282,9 @@ trade_manager:
   p1_pct: 0.3
   p2_pct: 0.7
   be_after_R: 1.0
-  max_bars_in_trade: 180
+  max_bars_in_trade: 120
 
 portfolio:
   equity0: "auto"
-  risk_per_trade: 0.02
-  max_position_pct: 0.70
+  risk_per_trade: 0.05
+  max_position_pct: 1.0
