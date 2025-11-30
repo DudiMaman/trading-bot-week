@@ -452,7 +452,11 @@ def main():
 
     # 5) Initial equity log
     now_utc = datetime.now(timezone.utc)
-    write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
+    write_csv(
+        EQUITY_CSV,
+        ["time", "equity"],
+        [[now_utc.isoformat(), f"{equity:.2f}"]],
+    )
     if db:
         try:
             db.write_equity(
@@ -584,6 +588,7 @@ def main():
                     print(f"⏭️ skip {sym}: {repr(e)}")
                     continue
 
+        # בדיקה אם התקדם בר חדש כלשהו; אם לא – נרדם רגע ורק נרשום equity
         progressed_any = False
         for key, row in snapshots.items():
             ts = row.name
@@ -665,7 +670,12 @@ def main():
                     except Exception as e:
                         print(f"[TP1] failed to get min_qty for {key}: {e}")
 
-                if live_qty is not None and live_qty > 0 and min_qty > 0 and live_qty < min_qty:
+                if (
+                    live_qty is not None
+                    and live_qty > 0
+                    and min_qty > 0
+                    and live_qty < min_qty
+                ):
                     print(
                         f"[TP1] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
                     )
@@ -749,7 +759,12 @@ def main():
                     except Exception as e:
                         print(f"[TP2] failed to get min_qty for {key}: {e}")
 
-                if live_qty is not None and live_qty > 0 and min_qty > 0 and live_qty < min_qty:
+                if (
+                    live_qty is not None
+                    and live_qty > 0
+                    and min_qty > 0
+                    and live_qty < min_qty
+                ):
                     print(
                         f"[TP2] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
                     )
@@ -832,7 +847,12 @@ def main():
                     except Exception as e:
                         print(f"[SL] failed to get min_qty for {key}: {e}")
 
-                if live_qty is not None and live_qty > 0 and min_qty > 0 and live_qty < min_qty:
+                if (
+                    live_qty is not None
+                    and live_qty > 0
+                    and min_qty > 0
+                    and live_qty < min_qty
+                ):
                     print(
                         f"[SL] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
                     )
@@ -925,7 +945,12 @@ def main():
                     except Exception as e:
                         print(f"[TIME] failed to get min_qty for {key}: {e}")
 
-                if live_qty is not None and live_qty > 0 and min_qty > 0 and live_qty < min_qty:
+                if (
+                    live_qty is not None
+                    and live_qty > 0
+                    and min_qty > 0
+                    and live_qty < min_qty
+                ):
                     print(
                         f"[TIME] dust position on {key}: live_qty {live_qty} < min_qty {min_qty} – marking as closed"
                     )
