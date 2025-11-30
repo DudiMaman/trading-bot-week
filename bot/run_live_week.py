@@ -452,7 +452,7 @@ def main():
 
     # 5) Initial equity log
     now_utc = datetime.now(timezone.utc)
-    write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}")]])
+    write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
     if db:
         try:
             db.write_equity(
@@ -591,7 +591,7 @@ def main():
                 last_bar_ts[key] = ts
                 progressed_any = True
 
-                if not progressed_any:
+        if not progressed_any:
             time.sleep(15)
             if time.time() - start_time >= SECONDS_IN_WEEK:
                 break
@@ -908,7 +908,7 @@ def main():
 
             # ---- TIME exit (if max bars reached and still open) ----
             pos["bars"] += 1
-            if pos["bars"] >= tm.max_bars_in_trade and not pos["tp2_done"]]:
+            if pos["bars"] >= tm.max_bars_in_trade and not pos["tp2_done"]:
                 exit_side = "sell" if side == "long" else "buy"
                 requested_close_qty = pos["qty"]
 
@@ -1180,7 +1180,7 @@ def main():
         write_csv(
             EQUITY_CSV,
             ["time", "equity"],
-            [[now_utc.isoformat(), f"{equity:.2f}")]],
+            [[now_utc.isoformat(), f"{equity:.2f}"]],
         )
         if db:
             try:
