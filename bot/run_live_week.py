@@ -206,11 +206,32 @@ def compute_close_qty(conn, symbol: str, side: str, requested_qty: float, fallba
 
 def place_order(conn, symbol: str, side: str, qty: float, reduce_only: bool = False):
     """
-    מבצע פקודת מרקט אמיתית בבייביט דרך CCXT.
+    מבצע פקודת מרקט:
+    - ב־בורסות CCXT (Bybit וכו') דרך exchange.create_order
+    - באלפאקה דרך AlpacaConnector.create_market_order
     side: "buy" / "sell"
-    אם reduce_only=True – מיועד ליציאות (TP/SL/TIME) בפיוצ'רס.
     מחזיר order_id אם הצליח, אחרת None.
     """
+    # 1) Alpaca – שימוש בקונקטור הייעודי
+    try:
+        if AlpacaConnector is not None and isinstance(conn, AlpacaConnector):
+            try:
+                order = conn.create_market_order(symbol, side, qty)
+                order_id = None
+                if isinstance(order, dict):
+                    order_id = order.get("id") or order.get("order_id")
+                if not order_id:
+                    order_id = str(order)
+                print(f"[ORDER OK][ALPACA] {symbol} {side} {qty} => {order_id}")
+                return order_id
+            except Exception as e:
+                print(f"[ORDER ERROR][ALPACA] {symbol} {side} {qty}: {e}")
+                return None
+    except NameError:
+        # AlpacaConnector לא קיים במודול – מתעלמים וממשיכים ל-CCXT
+        pass
+
+    # 2) CCXT (Bybit וכו')
     try:
         from ccxt.base.errors import ExchangeError
     except Exception:
@@ -444,7 +465,9 @@ def main():
     conns: list[tuple[dict, object]] = []
     live_connectors = cfg.get("live_connectors", []) or []
     for c in live_connectors:
-        ctype = c.get("type")
+        ctype = c.get("type", "ccxt")
+
+        # 6.1 יצירת הקונקטור לפי type
         if ctype == "ccxt":
             conn = CCXTConnector(
                 c.get("exchange_id", "bybit"),
@@ -467,50 +490,61 @@ def main():
             print(f"❌ init() failed for connector {c.get('name','?')}: {repr(e)}")
             continue
 
-        # apply Bybit API keys from env (for real-money mode)
-        api_key = os.getenv("BYBIT_API_KEY")
-        api_secret = os.getenv("BYBIT_API_SECRET")
-        if api_key and api_secret:
+        # 6.2 טיפול נפרד: CCXT (Bybit/Binance וכו') לעומת Alpaca
+        if ctype == "ccxt":
+            # apply Bybit API keys from env (for real-money mode)
+            api_key = os.getenv("BYBIT_API_KEY")
+            api_secret = os.getenv("BYBIT_API_SECRET")
+            if api_key and api_secret:
+                try:
+                    conn.exchange.apiKey = api_key
+                    conn.exchange.secret = api_secret
+                except Exception as e:
+                    print(f"[WARN] failed to set Bybit credentials on exchange: {e}")
+            else:
+                print("⚠️ BYBIT_API_KEY/BYBIT_API_SECRET not found in environment")
+
+            # load markets
             try:
-                conn.exchange.apiKey = api_key
-                conn.exchange.secret = api_secret
+                markets = conn.exchange.load_markets()
             except Exception as e:
-                print(f"[WARN] failed to set Bybit credentials on exchange: {e}")
-        else:
-            print("⚠️ BYBIT_API_KEY/BYBIT_API_SECRET not found in environment")
+                print(f"❌ load_markets() failed: {e}")
+                markets = {}
 
-        # load markets
-        try:
-            markets = conn.exchange.load_markets()
-        except Exception as e:
-            print(f"❌ load_markets() failed: {e}")
-            markets = {}
+            requested_syms = list(c.get("symbols", []) or [])
+            if "AUTO" in requested_syms:
+                auto_syms = [
+                    m
+                    for m, info in markets.items()
+                    if info.get("quote") == "USDT" and info.get("active", True)
+                ][:50]
+                cfg_syms = requested_syms + auto_syms
+            else:
+                cfg_syms = requested_syms
 
-        requested_syms = list(c.get("symbols", []) or [])
-        if "AUTO" in requested_syms:
-            auto_syms = [
-                m
-                for m, info in markets.items()
-                if info.get("quote") == "USDT" and info.get("active", True)
-            ][:50]
-            cfg_syms = requested_syms + auto_syms
-        else:
-            cfg_syms = requested_syms
+            available = set(getattr(conn.exchange, "symbols", []) or [])
+            valid_syms = [s for s in cfg_syms if s in available]
 
-        available = set(getattr(conn.exchange, "symbols", []) or [])
-        valid_syms = [s for s in cfg_syms if s in available]
+            if not valid_syms:
+                print(
+                    f"⚠️ No valid symbols for connector '{c.get('name','ccxt')}'. "
+                    f"Requested={len(cfg_syms)}, Available={len(available)}"
+                )
+            else:
+                print(
+                    f"✅ Connector '{c.get('name','ccxt')}' loaded {len(valid_syms)} valid symbols "
+                    f"(of {len(cfg_syms)} requested)."
+                )
 
-        if not valid_syms:
+        elif ctype == "alpaca":
+            # באלפאקה לא משתמשים ב-load_markets ולא מסננים לפי exchange.symbols
+            requested_syms = list(c.get("symbols", []) or [])
+            valid_syms = requested_syms
             print(
-                f"⚠️ No valid symbols for connector '{c.get('name','ccxt')}'. "
-                f"Requested={len(cfg_syms)}, Available={len(available)}"
-            )
-        else:
-            print(
-                f"✅ Connector '{c.get('name','ccxt')}' loaded {len(valid_syms)} valid symbols "
-                f"(of {len(cfg_syms)} requested)."
+                f"✅ Alpaca connector '{c.get('name','alpaca')}' using {len(valid_syms)} symbols from config."
             )
 
+        # 6.3 שמירה במבנה האחיד של conns
         c_local = dict(c)
         c_local["symbols"] = valid_syms
         conns.append((c_local, conn))
@@ -588,7 +622,7 @@ def main():
             entry = pos["entry"]
             qty = pos["qty"]
             R = pos["R"]
-            conn = pos.get("conn")      # CCXTConnector instance
+            conn = pos.get("conn")      # connector instance
 
             # trailing SL by ATR
             if atr_now:
