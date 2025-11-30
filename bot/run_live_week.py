@@ -452,7 +452,7 @@ def main():
 
     # 5) Initial equity log
     now_utc = datetime.now(timezone.utc)
-    write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
+    write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}")]])
     if db:
         try:
             db.write_equity(
@@ -598,7 +598,7 @@ def main():
             write_csv(
                 EQUITY_CSV,
                 ["time", "equity"],
-                [[now_utc.isoformat(), f"{equity:.2f}"]],
+                [[now_utc.isoformat(), f"{equity:.2f}")]],
             )
             if db:
                 try:
@@ -905,7 +905,7 @@ def main():
 
             # ---- TIME exit (if max bars reached and still open) ----
             pos["bars"] += 1
-            if pos["bars"] >= tm.max_bars_in_trade and not pos["tp2_done"]:
+            if pos["bars"] >= tm.max_bars_in_trade and not pos["tp2_done"]]:
                 exit_side = "sell" if side == "long" else "buy"
                 requested_close_qty = pos["qty"]
 
@@ -1047,16 +1047,26 @@ def main():
                 if R <= 0:
                     continue
 
-                market = {}
-                try:
-                    market = conn.exchange.market(sym)
-                except Exception:
-                    pass
+                # הגדרות כמות/מינימום – שונות ל-CCXT (Bybit וכו') ול-Alpaca
+                ctype = c_cfg.get("type", "ccxt")
 
-                step = determine_amount_step(market)
-                lims = (market or {}).get("limits", {}) or {}
-                min_qty = (lims.get("amount") or {}).get("min")
-                min_cost = (lims.get("cost") or {}).get("min")
+                if ctype == "alpaca":
+                    # באלפאקה אין לנו market דרך CCXT, אז נלך על ברירות מחדל פשוטות:
+                    market = {}
+                    step = 1.0          # נסחור בכמויות של יחידה שלמה (מניה/קריפטו)
+                    min_qty = None
+                    min_cost = None
+                else:
+                    market = {}
+                    try:
+                        market = conn.exchange.market(sym)
+                    except Exception:
+                        pass
+
+                    step = determine_amount_step(market)
+                    lims = (market or {}).get("limits", {}) or {}
+                    min_qty = (lims.get("amount") or {}).get("min")
+                    min_cost = (lims.get("cost") or {}).get("min")
 
                 # sizing לפי:
                 # 1) סיכון לעסקה
@@ -1167,7 +1177,7 @@ def main():
         write_csv(
             EQUITY_CSV,
             ["time", "equity"],
-            [[now_utc.isoformat(), f"{equity:.2f}"]],
+            [[now_utc.isoformat(), f"{equity:.2f}")]],
         )
         if db:
             try:
