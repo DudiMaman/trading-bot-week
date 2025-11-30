@@ -262,6 +262,72 @@ def place_order(conn, symbol: str, side: str, qty: float, reduce_only: bool = Fa
     return None
 
 
+def standardize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    מיישר DataFrame של OHLCV כך שתמיד יהיו העמודות:
+      time (index), open, high, low, close, volume
+
+    תומך גם במקרה שהקונקטור מחזיר:
+    - שמות עמודות באנגלית באותיות גדולות
+    - אינדקסים מספריים (0..5) מסידרת OHLCV
+    """
+    if df is None or len(df) == 0:
+        raise ValueError("standardize_ohlcv: got empty OHLCV dataframe")
+
+    df = df.copy()
+
+    # אם האינדקס לא דמוי זמן, נניח שהעמודה הראשונה היא time
+    if not isinstance(df.index, pd.DatetimeIndex):
+        if "time" in df.columns:
+            df["time"] = pd.to_datetime(df["time"], unit="ms", errors="coerce")
+            df = df.set_index("time")
+        elif 0 in df.columns:
+            df["time"] = pd.to_datetime(df[0], unit="ms", errors="coerce")
+            df = df.set_index("time")
+        else:
+            df.index = pd.to_datetime(df.index, errors="coerce")
+
+    col_map = {c.lower(): c for c in df.columns if isinstance(c, str)}
+
+    def _get_col(*candidates):
+        # לוקח את העמודה הראשונה שקיימת בין המועמדות
+        for cand in candidates:
+            if isinstance(cand, int) and cand in df.columns:
+                return cand
+            if isinstance(cand, str) and cand.lower() in col_map:
+                return col_map[cand.lower()]
+        return None
+
+    o_col = _get_col("open", "o", 1)
+    h_col = _get_col("high", "h", 2)
+    l_col = _get_col("low", "l", 3)
+    c_col = _get_col("close", "c", 4)
+    v_col = _get_col("volume", "v", 5)
+
+    missing = [name for name, col in [
+        ("open", o_col),
+        ("high", h_col),
+        ("low", l_col),
+        ("close", c_col),
+        ("volume", v_col),
+    ] if col is None]
+
+    if missing:
+        raise KeyError(f"standardize_ohlcv: missing OHLCV columns: {missing}. got: {list(df.columns)}")
+
+    out = pd.DataFrame(
+        {
+            "open": df[o_col].astype(float),
+            "high": df[h_col].astype(float),
+            "low": df[l_col].astype(float),
+            "close": df[c_col].astype(float),
+            "volume": df[v_col].astype(float),
+        },
+        index=df.index,
+    )
+    return out
+
+
 def attach_atr(ltf_df: pd.DataFrame) -> pd.Series:
     return calc_atr(ltf_df, 14)
 
@@ -578,8 +644,13 @@ def main():
             htf = c_cfg.get("htf_timeframe", "5m")
             for sym in c_cfg.get("symbols", []):
                 try:
-                    ltf_df = conn.fetch_ohlcv(sym, tf, limit=600)
-                    htf_df = conn.fetch_ohlcv(sym, htf, limit=600)
+                    # כאן מיישרים את ה־OHLCV לפני המעבר לסטרטגיה
+                    ltf_df_raw = conn.fetch_ohlcv(sym, tf, limit=600)
+                    htf_df_raw = conn.fetch_ohlcv(sym, htf, limit=600)
+
+                    ltf_df = standardize_ohlcv(ltf_df_raw)
+                    htf_df = standardize_ohlcv(htf_df_raw)
+
                     feats = prepare_features(ltf_df, htf_df, strat, donchian_len_cfg)
                     last = feats.iloc[-1]
                     key = (c_cfg.get("name", "ccxt"), sym)
