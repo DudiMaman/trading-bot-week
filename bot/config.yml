@@ -1,40 +1,86 @@
 live_connectors:
   - name: alpaca_paper
-    type: ccxt
-    exchange_id: alpaca
-    paper: true              # מצב פייפר – חשוב בשלב הזה
-    default_type: null       # פתוח לכל סוגי הנכסים שאלפקה תומכת בהם (מניות, קריפטו וכו')
-    # שימוש בכל מה שאלפקה מציעה – מניות + קריפטו + ETF וכו'
-    # בהטמעה בפועל: אם symbols == ["ALL"] → לטעון את כל ה-markets מ-fetch_markets()
-    symbols: ["ALL"]
+    type: alpaca
+    paper: true
+    symbols:
+      # טכנולוגיה / מגה-קאפ
+      - AAPL
+      - MSFT
+      - AMZN
+      - GOOGL
+      - META
+      - NVDA
+      - TSLA
+      - NFLX
+      - AMD
+      - INTC
+      - IBM
+      - ORCL
+      - ADBE
+      - CRM
+      - CSCO
+      - AVGO
+      - QCOM
+      - SHOP
+
+      # צריכה / בריאות / פיננסים / אנרגיה
+      - PEP
+      - KO
+      - MCD
+      - SBUX
+      - JNJ
+      - PFE
+      - UNH
+      - XOM
+      - CVX
+      - JPM
+      - BAC
+      - WFC
+      - GS
+      - V
+      - MA
+
+      # ETF גדולים
+      - SPY    # S&P 500
+      - QQQ    # Nasdaq 100
+      - DIA    # Dow Jones
+      - IWM    # Russell 2000
+      - GLD    # זהב
+      - SLV    # כסף
+      - ARKK   # ARK Innovation
+
+      # קריפטו דרך אלפאקה (פורמט 'COIN/USD')
+      - BTC/USD
+      - ETH/USD
+      - SOL/USD
+      - AVAX/USD
+      - DOGE/USD
+      - LTC/USD
+
     timeframe: "5m"
     htf_timeframe: "15m"
 
-  # אפשר להשאיר את Bybit כרגע פעיל, או לכבות אותו (להוריד/להעיר החוצה) אם אתה רוצה תקופה רק אלפקה
-  #- name: bybit
-  #  type: ccxt
-  #  exchange_id: bybit
-  #  paper: false
-  #  default_type: swap
-    # מומלץ להתחיל רק עם BTC ו-ETH כדי להרגיע רעש, אבל כרגע הכל כמו שהיה
-  #  symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT"]
-  #  timeframe: "5m"
-  #  htf_timeframe: "15m"
+  # - name: bybit
+  #   type: ccxt
+  #   exchange_id: bybit
+  #   paper: false
+  #   default_type: swap
+  #   symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT", "XMR/USDT:USDT", "XRP/USDT:USDT", "SOL/USDT:USDT"]
+  #   timeframe: "5m"
+  #   htf_timeframe: "15m"
 
 strategy:
-  # היה 4 → מעלה ל-20 כדי לצמצם רעש
   donchian_len: 20
-  # היה 0 → מחזיר פילטר מגמה אמיתי
   adx_min: 24
 
 trade_manager:
-  atr_k_sl: 2.0      # מרחק SL = 2*ATR
-  r1_R: 1.0          # TP1 במרחק 1R
-  r2_R: 2.0          # TP2 במרחק 2R
-  p1_pct: 0.3        # סוגרים 30% ב-TP1
-  p2_pct: 0.7        # סוגרים 70% ב-TP2
-  be_after_R: 1.0    # מעביר SL ל-BE אחרי 1R
-  max_bars_in_trade: 180   # אם קיים ערך אחר – אפשר להשאיר, לא קריטי כרגע
+  atr_k_sl: 2.0
+  r1_R: 1.0
+  r2_R: 2.0
+  p1_pct: 0.3
+  p2_pct: 0.7
+  be_after_R: 1.0
+  max_bars_in_trade: 180
 
 portfolio:
   equity0: "auto"
