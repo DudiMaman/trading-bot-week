@@ -24,8 +24,20 @@ class AlpacaConnector(BaseConnector):
         self.api = REST(api_key, api_secret, base_url=base_url)
         self.paper = paper
 
+        # 👇 שכבת תאימות ל-ccxt כדי שהקוד ב-run_live_week לא ייפול
+        # הקוד מצפה ל-conn.exchange.symbols ול-conn.exchange.load_markets()
+        self.symbols = []       # נוכל לעדכן בעתיד אם נרצה
+        self.id = "alpaca"
+
+        # חשוב: אחרי שיש attributes כמו symbols/load_markets, נגדיר exchange = self
+        self.exchange = self
+
     def init(self):
         pass
+
+    # ccxt-style stub – כדי שאם מישהו קורא exchange.load_markets() זה פשוט לא ייפול
+    def load_markets(self):
+        return None
 
     @staticmethod
     def _normalize_timeframe(timeframe: str) -> str:
@@ -66,7 +78,6 @@ class AlpacaConnector(BaseConnector):
             bars = self.api.get_bars(symbol, tf, limit=limit).df
 
         df = bars.reset_index().rename(columns={'timestamp': 'ts'})
-        # בחלק מהפידים של אלפקה יש גם עמודת 'symbol' – אותנו מעניינות רק ה־OHLCV
         cols = [c for c in ['ts', 'open', 'high', 'low', 'close', 'volume'] if c in df.columns]
         df = df[cols]
         df['ts'] = pd.to_datetime(df['ts'])
@@ -87,11 +98,9 @@ class AlpacaConnector(BaseConnector):
             type='market',
             time_in_force=tif,
         )
-        # _raw קיים באובייקטים של alpaca_trade_api; אם לא – מחזירים ID בסיסי
         return getattr(order, '_raw', {'id': str(order.id)})
 
     def get_precision(self, symbol: str) -> Dict[str, Any]:
-        # אפשר לשפר בעתיד לפי symbol ספציפי; לעת עתה ערכי ברירת מחדל סבירים
         return {'amount_min': 1.0, 'price_tick': 0.01, 'amount_step': 1.0}
 
     def account_equity(self) -> float:
