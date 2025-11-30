@@ -77,12 +77,32 @@ class AlpacaConnector(BaseConnector):
             # מניות / ETF
             bars = self.api.get_bars(symbol, tf, limit=limit).df
 
-        df = bars.reset_index().rename(columns={'timestamp': 'ts'})
-        cols = [c for c in ['ts', 'open', 'high', 'low', 'close', 'volume'] if c in df.columns]
+        # הופכים לאינדקס רגיל
+        df = bars.reset_index()
+
+        # מנסים לזהות עמודת זמן:
+        # 1. אם יש 'timestamp' / 'time' / 't' בעמודות – ניקח אותה
+        # 2. אחרת – נניח שהעמודה הראשונה היא הזמן
+        ts_col_candidates = ['timestamp', 'time', 't']
+        ts_col = None
+        for c in ts_col_candidates:
+            if c in df.columns:
+                ts_col = c
+                break
+        if ts_col is None:
+            ts_col = df.columns[0]
+
+        df = df.rename(columns={ts_col: 'ts'})
+
+        # שומרים רק את מה שקיים בפועל מתוך OHLCV
+        ohlcv_cols = ['open', 'high', 'low', 'close', 'volume']
+        cols = ['ts'] + [c for c in ohlcv_cols if c in df.columns]
         df = df[cols]
+
         df['ts'] = pd.to_datetime(df['ts'])
         df.set_index('ts', inplace=True)
         return df
+
 
     def create_market_order(self, symbol: str, side: str, qty: float) -> Dict[str, Any]:
         """
