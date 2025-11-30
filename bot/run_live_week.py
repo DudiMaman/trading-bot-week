@@ -595,11 +595,12 @@ def main():
             time.sleep(15)
             if time.time() - start_time >= SECONDS_IN_WEEK:
                 break
-            write_csv(
-                EQUITY_CSV,
-                ["time", "equity"],
-                [[now_utc.isoformat(), f"{equity:.2f}")]],
-            )
+                write_csv(
+        EQUITY_CSV,
+        ["time", "equity"],
+        [[now_utc.isoformat(), f"{equity:.2f}"]],
+    )
+
             if db:
                 try:
                     db.write_equity(
