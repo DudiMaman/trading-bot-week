@@ -5,6 +5,7 @@
 # - Standardized OHLCV (no KeyError('high'))
 # - Support for CCXT (e.g. Bybit) and Alpaca
 # - Basic TP/SL, time exit and equity logging
+# - Auto equity from Bybit (USDT) + Alpaca (USD)
 # ------------------------------------------------------------
 
 import os
@@ -13,7 +14,10 @@ import math
 import time
 import csv as _csv
 import inspect
+import json
 from datetime import datetime, timezone
+from urllib import request as _urlreq
+from urllib import error as _urlerr
 
 import yaml
 import pandas as pd
@@ -150,8 +154,8 @@ def standardize_ohlcv(df_raw) -> pd.DataFrame:
         "open": ["open", "o"],
         "high": ["high", "h"],
         "low":  ["low", "l"],
-        "close": ["close", "c"],
-        "volume": ["volume", "v"],
+        "close":["close", "c"],
+        "volume":["volume", "v"],
     }
 
     for target, candidates in mapping.items():
@@ -385,6 +389,96 @@ def append_trade(
 
 
 # ------------------------
+# Equity helpers
+# ------------------------
+def fetch_bybit_equity() -> float:
+    """Fetch equity (USDT) from Bybit using CCXT, if API keys exist."""
+    api_key = os.getenv("BYBIT_API_KEY")
+    api_secret = os.getenv("BYBIT_API_SECRET")
+
+    if not api_key or not api_secret:
+        print("⚠️ BYBIT_API_KEY/SECRET missing – skipping Bybit equity")
+        return 0.0
+
+    try:
+        exchange = ccxt.bybit(
+            {
+                "apiKey": api_key,
+                "secret": api_secret,
+                "enableRateLimit": True,
+                "options": {"defaultType": "swap"},
+            }
+        )
+        equity_unified = 0.0
+        equity_spot = 0.0
+
+        try:
+            bal_u = exchange.fetch_balance({"type": "UNIFIED"})
+            usdt_u = bal_u.get("USDT") or {}
+            equity_unified = float(usdt_u.get("total") or usdt_u.get("free") or 0.0)
+        except Exception as e_u:
+            print(f"⚠️ fetch_balance UNIFIED failed (Bybit): {e_u}")
+
+        try:
+            bal_s = exchange.fetch_balance()
+            usdt_s = bal_s.get("USDT") or {}
+            equity_spot = float(usdt_s.get("total") or usdt_s.get("free") or 0.0)
+        except Exception as e_s:
+            print(f"⚠️ fetch_balance SPOT failed (Bybit): {e_s}")
+
+        equity = max(equity_unified, equity_spot)
+        print(
+            f"💰 Bybit equity – UNIFIED={equity_unified} USDT, "
+            f"SPOT={equity_spot} USDT, used={equity}"
+        )
+        return equity
+    except Exception as e:
+        print(f"⚠️ failed to fetch live balance from Bybit: {e}")
+        return 0.0
+
+
+def fetch_alpaca_equity() -> float:
+    """Fetch equity (USD) from Alpaca trading API using env keys, if present."""
+    api_key = os.getenv("APCA_API_KEY_ID")
+    api_secret = os.getenv("APCA_API_SECRET_KEY")
+    base_url = os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
+
+    if not api_key or not api_secret:
+        print("⚠️ APCA_API_KEY_ID/SECRET missing – skipping Alpaca equity")
+        return 0.0
+
+    url = base_url.rstrip("/") + "/v2/account"
+    req = _urlreq.Request(url)
+    req.add_header("APCA-API-KEY-ID", api_key)
+    req.add_header("APCA-API-SECRET-KEY", api_secret)
+
+    try:
+        with _urlreq.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except _urlerr.HTTPError as e:
+        print(f"⚠️ HTTP error fetching Alpaca account: {e.code} {e.reason}")
+        return 0.0
+    except Exception as e:
+        print(f"⚠️ failed to fetch Alpaca account: {e}")
+        return 0.0
+
+    try:
+        eq_str = data.get("equity") or data.get("portfolio_value") or data.get("cash")
+        if eq_str is None:
+            print(
+                f"⚠️ Alpaca account response missing 'equity'/'portfolio_value', "
+                f"keys={list(data.keys())}"
+            )
+            return 0.0
+        equity = float(eq_str)
+        print(f"💰 Alpaca equity (from /v2/account): {equity} USD")
+        return equity
+    except Exception as e:
+        print(f"⚠️ failed to parse Alpaca equity from response: {e}")
+        return 0.0
+
+
+# ------------------------
 # main
 # ------------------------
 def main():
@@ -427,55 +521,22 @@ def main():
     equity_cfg = portfolio.get("equity0", "auto")
 
     if isinstance(equity_cfg, str) and equity_cfg.lower() == "auto":
-        api_key = os.getenv("BYBIT_API_KEY")
-        api_secret = os.getenv("BYBIT_API_SECRET")
-        equity = 0.0
-        try:
-            if not api_key or not api_secret:
-                print("⚠️ BYBIT_API_KEY/SECRET missing – starting with equity = 0")
-            else:
-                exchange = ccxt.bybit(
-                    {
-                        "apiKey": api_key,
-                        "secret": api_secret,
-                        "enableRateLimit": True,
-                        "options": {"defaultType": "swap"},
-                    }
-                )
-                equity_unified = 0.0
-                equity_spot = 0.0
+        equity_bybit = fetch_bybit_equity()
+        equity_alpaca = fetch_alpaca_equity()
 
-                try:
-                    bal_u = exchange.fetch_balance({"type": "UNIFIED"})
-                    usdt_u = bal_u.get("USDT") or {}
-                    equity_unified = float(
-                        usdt_u.get("total") or usdt_u.get("free") or 0.0
-                    )
-                except Exception as e_u:
-                    print(f"⚠️ fetch_balance UNIFIED failed: {e_u}")
-
-                try:
-                    bal_s = exchange.fetch_balance()
-                    usdt_s = bal_s.get("USDT") or {}
-                    equity_spot = float(
-                        usdt_s.get("total") or usdt_s.get("free") or 0.0
-                    )
-                except Exception as e_s:
-                    print(f"⚠️ fetch_balance SPOT failed: {e_s}")
-
-                equity = max(equity_unified, equity_spot)
-                print(
-                    f"💰 Bybit equity – UNIFIED={equity_unified} USDT, "
-                    f"SPOT={equity_spot} USDT, used={equity}"
-                )
-        except Exception as e:
-            print(f"⚠️ failed to fetch live balance from Bybit, starting with 0. Error: {e}")
-            equity = 0.0
+        equity = max(equity_bybit, equity_alpaca)
+        print(
+            f"💰 Auto equity – Bybit={equity_bybit:.2f}, Alpaca={equity_alpaca:.2f}, "
+            f"used={equity:.2f}"
+        )
+        if equity <= 0:
+            print("⚠️ Auto equity is 0 – bot will not open new positions until balance is > 0")
     else:
         try:
             equity = float(equity_cfg)
         except Exception:
             equity = 0.0
+        print(f"💰 Using fixed equity from config: {equity:.2f}")
 
     rm = RiskManager(
         equity=equity,
@@ -599,6 +660,7 @@ def main():
             htf = c_cfg.get("htf_timeframe", "5m")
             for sym in c_cfg.get("symbols", []):
                 try:
+                    # שים לב: הורדנו limit ל-200 כדי להקל על Alpaca
                     ltf_df_raw = conn.fetch_ohlcv(sym, tf, limit=200)
                     htf_df_raw = conn.fetch_ohlcv(sym, htf, limit=200)
 
@@ -610,17 +672,7 @@ def main():
                     key = (c_cfg.get("name", "ccxt"), sym)
                     snapshots[key] = last
                 except Exception as e:
-                    msg = repr(e)
-                    # שגיאות "אין דאטה" – לא מעניינות, לא להדפיס
-                    if "standardize_ohlcv: got empty OHLCV dataframe" in msg:
-                        continue
-                    if "standardize_ohlcv: all rows became NaN after cleaning" in msg:
-                        continue
-                    if "standardize_ohlcv: got empty OHLCV dataframe (sequence)" in msg:
-                        continue
-                    if "standardize_ohlcv: got empty OHLCV dataframe (None)" in msg:
-                        continue
-                    print(f"⏭️ skip {sym}: {msg}")
+                    print(f"⏭️ skip {sym}: {repr(e)}")
                     continue
 
         # check new bar
