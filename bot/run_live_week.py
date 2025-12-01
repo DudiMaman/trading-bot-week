@@ -599,8 +599,8 @@ def main():
             htf = c_cfg.get("htf_timeframe", "5m")
             for sym in c_cfg.get("symbols", []):
                 try:
-                    ltf_df_raw = conn.fetch_ohlcv(sym, tf, limit=600)
-                    htf_df_raw = conn.fetch_ohlcv(sym, htf, limit=600)
+                    ltf_df_raw = conn.fetch_ohlcv(sym, tf, limit=200)
+                    htf_df_raw = conn.fetch_ohlcv(sym, htf, limit=200)
 
                     ltf_df = standardize_ohlcv(ltf_df_raw)
                     htf_df = standardize_ohlcv(htf_df_raw)
