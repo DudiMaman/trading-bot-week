@@ -13,11 +13,10 @@ import math
 import time
 import csv as _csv
 import inspect
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import yaml
 import pandas as pd
-from pandas.api.types import is_datetime64_any_dtype
 from dotenv import load_dotenv
 
 import ccxt
@@ -132,7 +131,7 @@ def standardize_ohlcv(df_raw) -> pd.DataFrame:
     if df_raw is None:
         raise ValueError("standardize_ohlcv: got empty OHLCV dataframe (None)")
 
-    # Sequence from exchange (ccxt-style list of lists)
+    # Sequence from exchange
     if not isinstance(df_raw, pd.DataFrame):
         if not df_raw:
             raise ValueError("standardize_ohlcv: got empty OHLCV dataframe (sequence)")
@@ -144,8 +143,7 @@ def standardize_ohlcv(df_raw) -> pd.DataFrame:
     if df.empty:
         raise ValueError("standardize_ohlcv: got empty OHLCV dataframe")
 
-    # Normalize column names (case-insensitive, o/h/l/c/v aliases)
-    lower_cols = {str(c).lower(): c for c in df.columns}
+    lower_cols = {c.lower(): c for c in df.columns}
     rename_map = {}
 
     mapping = {
@@ -169,13 +167,7 @@ def standardize_ohlcv(df_raw) -> pd.DataFrame:
     if "time" in df.columns:
         df = df.set_index("time")
     elif "timestamp" in df.columns:
-        ts = df["timestamp"]
-        # If it's already datetime-like (e.g. Alpaca), don't assume ms
-        if is_datetime64_any_dtype(ts):
-            df["time"] = pd.to_datetime(ts, utc=True, errors="coerce")
-        else:
-            # ccxt-style ms since epoch
-            df["time"] = pd.to_datetime(ts, unit="ms", utc=True, errors="coerce")
+        df["time"] = pd.to_datetime(df["timestamp"], unit="ms", errors="coerce")
         df = df.set_index("time")
 
     required = {"open", "high", "low", "close"}
@@ -600,14 +592,11 @@ def main():
         now_utc = datetime.now(timezone.utc)
         rows_trades: list[list] = []
         snapshots: dict = {}
-        empty_ohlcv_connectors = set()
 
         # ---------------- fetch & features ----------------
         for c_cfg, conn in conns:
             tf = c_cfg.get("timeframe", "1m")
             htf = c_cfg.get("htf_timeframe", "5m")
-            conn_name = c_cfg.get("name", c_cfg.get("type", "ccxt"))
-
             for sym in c_cfg.get("symbols", []):
                 try:
                     ltf_df_raw = conn.fetch_ohlcv(sym, tf, limit=600)
@@ -618,21 +607,20 @@ def main():
 
                     feats = prepare_features(ltf_df, htf_df, strat, donchian_len_cfg)
                     last = feats.iloc[-1]
-                    key = (conn_name, sym)
+                    key = (c_cfg.get("name", "ccxt"), sym)
                     snapshots[key] = last
                 except Exception as e:
                     msg = repr(e)
+                    # שגיאות "אין דאטה" – לא מעניינות, לא להדפיס
                     if "standardize_ohlcv: got empty OHLCV dataframe" in msg:
-                        # Log פעם אחת לכל קונקטור בסיבוב לולאה כשאין בכלל נתונים
-                        if conn_name not in empty_ohlcv_connectors:
-                            print(
-                                f"ℹ️ {conn_name}: OHLCV empty for {sym} "
-                                f"(probably market closed or no data). "
-                                f"Skipping empty symbols this cycle."
-                            )
-                            empty_ohlcv_connectors.add(conn_name)
-                    else:
-                        print(f"⏭️ skip {sym}: {msg}")
+                        continue
+                    if "standardize_ohlcv: all rows became NaN after cleaning" in msg:
+                        continue
+                    if "standardize_ohlcv: got empty OHLCV dataframe (sequence)" in msg:
+                        continue
+                    if "standardize_ohlcv: got empty OHLCV dataframe (None)" in msg:
+                        continue
+                    print(f"⏭️ skip {sym}: {msg}")
                     continue
 
         # check new bar
@@ -644,14 +632,7 @@ def main():
                 progressed_any = True
 
         if not progressed_any:
-            # אם אין בכלל snapshots, כנראה השוק סגור או אין נתונים – נישן יותר זמן
-            if not snapshots:
-                print("ℹ️ No valid OHLCV snapshots this cycle (all symbols skipped). Sleeping 60s.")
-                sleep_secs = 60
-            else:
-                sleep_secs = 15
-
-            time.sleep(sleep_secs)
+            time.sleep(15)
             if time.time() - start_time >= SECONDS_IN_WEEK:
                 break
 
@@ -1078,7 +1059,7 @@ def main():
         # ---------------- new entries ----------------
         for c_cfg, conn in conns:
             for sym in c_cfg.get("symbols", []):
-                key = (c_cfg.get("name", c_cfg.get("type", "ccxt")), sym)
+                key = (c_cfg.get("name", "ccxt"), sym)
 
                 if remaining_notional <= 0:
                     continue
