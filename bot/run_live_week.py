@@ -555,7 +555,7 @@ def main():
     rm = RiskManager(
         equity=equity,
         risk_per_trade=float(portfolio.get("risk_per_trade", 0.03)),
-        max_position_pct=float(portfolio.get("max_position_pct", 0.70)),
+        max_position_pct=float(portfolio.get("max_position_pct", 1.0)),
     )
 
     config_id = os.getenv("BOT_CONFIG_ID", "SAFE_V1")
