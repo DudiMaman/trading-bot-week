@@ -29,7 +29,7 @@ class TradeManager:
       - r1_R, r2_R: יעדי רווח ביחס ל-R
       - p1_pct, p2_pct: חלק יחסי לסגירה ב-TP1/TP2
       - be_after_R: כמה R צריך לעבור כדי להעביר SL ל-B/E
-      - trail_atr_k: טריילינג לפי ATR
+      - trail_atr_k / atr_trail: טריילינג לפי ATR
       - max_bars_in_trade: יציאה בכוח אחרי מספר נרות
     אם יגיעו פרמטרים לא מוכרים — נתעלם (compat).
     """
@@ -52,6 +52,7 @@ class TradeManager:
         self.p2_pct = float(p2_pct)
         self.be_after_R = float(be_after_R)
         self.trail_atr_k = float(trail_atr_k)
+        self.atr_trail = self.trail_atr_k  # אליאס לשם שבו משתמש run_live_week
         self.max_bars_in_trade = int(max_bars_in_trade)
 
     def trail_level(self, side: str, price: float, atr_now: float, after_tp1: bool) -> float:
