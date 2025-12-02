@@ -69,6 +69,45 @@ class DB:
                 """
             )
 
+            # --- מיגרציה לסכמות ישנות של live_trades עם time_entry ---
+
+            try:
+                # 1) אם אין עמודת time_entry – ניצור אותה
+                cur.execute(
+                    """
+                    alter table live_trades
+                    add column if not exists time_entry timestamptz;
+                    """
+                )
+
+                # 2) נגדיר ברירת מחדל now() לעמודה הזו
+                cur.execute(
+                    """
+                    alter table live_trades
+                    alter column time_entry set default now();
+                    """
+                )
+
+                # 3) נמלא ערך לכל רשומה קיימת שבה time_entry הוא NULL
+                cur.execute(
+                    """
+                    update live_trades
+                    set time_entry = now()
+                    where time_entry is null;
+                    """
+                )
+
+                # 4) נוודא שהעמודה היא NOT NULL (כמו בסכמה הישנה שלך)
+                cur.execute(
+                    """
+                    alter table live_trades
+                    alter column time_entry set not null;
+                    """
+                )
+            except Exception as e:
+                # לא מפיל את האפליקציה אם המיגרציה נכשלה – רק מדפיס אזהרה
+                print(f"[WARN] live_trades time_entry migration failed: {e}")
+
     # ------------------------
     # equity
     # ------------------------
@@ -139,6 +178,7 @@ class DB:
     ) -> int | None:
         """
         פותח רשומה ב-live_trades ומחזיר trade_id.
+        time_entry מטופל על ידי ברירת המחדל של ה-DB (now()).
         """
         with psycopg.connect(self.dsn, autocommit=True, row_factory=dict_row) as conn:
             cur = conn.cursor()
