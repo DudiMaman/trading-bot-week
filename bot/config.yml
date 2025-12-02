@@ -59,6 +59,6 @@ trade_manager:
   max_bars_in_trade: 120
 
 portfolio:
-  equity0: "auto"
-  risk_per_trade: 0.02
-  max_position_pct: 1.0
+  equity0: "auto"      # הבוט מחשב בעצמו את גודל ההון ההתחלתי
+  risk_per_trade: 0.02 # סיכון מקסימלי בסטופ – 2% מההון לכל טרייד
+  max_position_pct: 0.2 # חשיפה מקסימלית למניה אחת – 20% מההון הכולל
