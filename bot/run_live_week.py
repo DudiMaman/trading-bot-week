@@ -221,28 +221,36 @@ def fetch_alpaca_equity() -> float:
 # ------------------------
 # OHLCV standardization
 # ------------------------
-def standardize_ohlcv(df_raw) -> pd.DataFrame:
+def standardize_ohlcv(df_raw, symbol: str = ""):
     """
     Ensures DataFrame with columns: open, high, low, close [, volume].
     Supports:
       - list/tuple of OHLCV rows (ccxt-style)
       - DataFrame with different column names (o/h/l/c/v, etc.)
-    Raises ValueError if after cleaning there's no data.
+
+    Returns:
+      - pandas.DataFrame if data is valid and non-empty
+      - None if there is simply no data (empty df / empty sequence / None)
+
+    Raises:
+      - ValueError only for structural problems (e.g. missing required columns),
+        not עבור מקרה רגיל של "אין נתונים כרגע".
     """
+    # אין דאטה בכלל – לא שגיאה לוגית, פשוט אין מה לעבוד עליו
     if df_raw is None:
-        raise ValueError("standardize_ohlcv: got empty OHLCV dataframe (None)")
+        return None
 
     # Sequence from exchange
     if not isinstance(df_raw, pd.DataFrame):
         if not df_raw:
-            raise ValueError("standardize_ohlcv: got empty OHLCV dataframe (sequence)")
+            return None
         cols = ["timestamp", "open", "high", "low", "close", "volume"]
         df = pd.DataFrame(df_raw, columns=cols[: len(df_raw[0])])
     else:
         df = df_raw.copy()
 
     if df.empty:
-        raise ValueError("standardize_ohlcv: got empty OHLCV dataframe")
+        return None
 
     lower_cols = {c.lower(): c for c in df.columns}
     rename_map = {}
@@ -282,7 +290,8 @@ def standardize_ohlcv(df_raw) -> pd.DataFrame:
 
     df = df[cols_out].dropna(how="any")
     if df.empty:
-        raise ValueError("standardize_ohlcv: all rows became NaN after cleaning")
+        # כל השורות נוקו – מבחינתנו זה "אין דאטה כרגע"
+        return None
 
     return df
 
@@ -669,10 +678,17 @@ def main():
                     ltf_df_raw = conn.fetch_ohlcv(sym, tf, limit=200)
                     htf_df_raw = conn.fetch_ohlcv(sym, htf, limit=200)
 
-                    ltf_df = standardize_ohlcv(ltf_df_raw)
-                    htf_df = standardize_ohlcv(htf_df_raw)
+                    ltf_df = standardize_ohlcv(ltf_df_raw, sym)
+                    htf_df = standardize_ohlcv(htf_df_raw, sym)
+
+                    # אין דאטה – שוק סגור / אין היסטוריה – מדלגים בשקט
+                    if ltf_df is None or htf_df is None:
+                        continue
 
                     feats = prepare_features(ltf_df, htf_df, strat, donchian_len_cfg)
+                    if feats.empty:
+                        continue
+
                     last = feats.iloc[-1]
                     key = (c_cfg.get("name", "ccxt"), sym)
                     snapshots[key] = last
