@@ -173,7 +173,6 @@ def fetch_alpaca_equity() -> float:
     Fetch equity from Alpaca using either APCA_* or ALPACA_* env vars.
     Returns 0.0 on any error.
     """
-    # support both naming styles
     key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY_ID")
     secret = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET_KEY")
     base_url = (
@@ -186,7 +185,6 @@ def fetch_alpaca_equity() -> float:
         print("⚠️ APCA/ALPACA API key/secret missing – returning 0.0 for Alpaca equity")
         return 0.0
 
-    # default base URL if none provided
     if not base_url:
         is_paper = os.getenv("ALPACA_PAPER", "true").lower() == "true"
         if is_paper:
@@ -218,6 +216,54 @@ def fetch_alpaca_equity() -> float:
         return 0.0
 
 
+def fetch_alpaca_buying_power() -> float:
+    """
+    Fetch buying_power from Alpaca /v2/account.
+    Returns 0.0 on any error.
+    """
+    key = os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY_ID")
+    secret = os.getenv("APCA_API_SECRET_KEY") or os.getenv("ALPACA_API_SECRET_KEY")
+    base_url = (
+        os.getenv("APCA_API_BASE_URL")
+        or os.getenv("ALPACA_BASE_URL")
+        or ""
+    )
+
+    if not key or not secret:
+        print("⚠️ APCA/ALPACA API key/secret missing – returning 0.0 for Alpaca buying_power")
+        return 0.0
+
+    if not base_url:
+        is_paper = os.getenv("ALPACA_PAPER", "true").lower() == "true"
+        if is_paper:
+            base_url = "https://paper-api.alpaca.markets"
+        else:
+            base_url = "https://api.alpaca.markets"
+
+    try:
+        import requests
+    except ImportError:
+        print("⚠️ 'requests' not installed – cannot fetch Alpaca buying_power, returning 0.0")
+        return 0.0
+
+    try:
+        url = base_url.rstrip("/") + "/v2/account"
+        headers = {
+            "APCA-API-KEY-ID": key,
+            "APCA-API-SECRET-KEY": secret,
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        bp_str = data.get("buying_power") or "0"
+        buying_power = float(bp_str)
+        print(f"💰 Alpaca buying_power – {buying_power}")
+        return max(buying_power, 0.0)
+    except Exception as e:
+        print(f"⚠️ failed to fetch Alpaca buying_power, returning 0.0. Error: {e}")
+        return 0.0
+
+
 # ------------------------
 # OHLCV standardization
 # ------------------------
@@ -227,20 +273,10 @@ def standardize_ohlcv(df_raw, symbol: str = ""):
     Supports:
       - list/tuple of OHLCV rows (ccxt-style)
       - DataFrame with different column names (o/h/l/c/v, etc.)
-
-    Returns:
-      - pandas.DataFrame if data is valid and non-empty
-      - None if there is simply no data (empty df / empty sequence / None)
-
-    Raises:
-      - ValueError only for structural problems (e.g. missing required columns),
-        not עבור מקרה רגיל של "אין נתונים כרגע".
     """
-    # אין דאטה בכלל – לא שגיאה לוגית, פשוט אין מה לעבוד עליו
     if df_raw is None:
         return None
 
-    # Sequence from exchange
     if not isinstance(df_raw, pd.DataFrame):
         if not df_raw:
             return None
@@ -272,7 +308,6 @@ def standardize_ohlcv(df_raw, symbol: str = ""):
     if rename_map:
         df = df.rename(columns=rename_map)
 
-    # set time index
     if "time" in df.columns:
         df = df.set_index("time")
     elif "timestamp" in df.columns:
@@ -290,7 +325,6 @@ def standardize_ohlcv(df_raw, symbol: str = ""):
 
     df = df[cols_out].dropna(how="any")
     if df.empty:
-        # כל השורות נוקו – מבחינתנו זה "אין דאטה כרגע"
         return None
 
     return df
@@ -668,20 +702,22 @@ def main():
         rows_trades: list[list] = []
         snapshots: dict = {}
 
+        # Alpaca buying_power – אם יש בכלל קונקטור אלפקה
+        has_alpaca = any(c_cfg.get("type") == "alpaca" for c_cfg, _ in conns)
+        alpaca_buying_power = fetch_alpaca_buying_power() if has_alpaca else 0.0
+
         # ---------------- fetch & features ----------------
         for c_cfg, conn in conns:
             tf = c_cfg.get("timeframe", "1m")
             htf = c_cfg.get("htf_timeframe", "5m")
             for sym in c_cfg.get("symbols", []):
                 try:
-                    # reduced limit to 200 to ease API load
                     ltf_df_raw = conn.fetch_ohlcv(sym, tf, limit=200)
                     htf_df_raw = conn.fetch_ohlcv(sym, htf, limit=200)
 
                     ltf_df = standardize_ohlcv(ltf_df_raw, sym)
                     htf_df = standardize_ohlcv(htf_df_raw, sym)
 
-                    # אין דאטה – שוק סגור / אין היסטוריה – מדלגים בשקט
                     if ltf_df is None or htf_df is None:
                         continue
 
@@ -1171,6 +1207,12 @@ def main():
                     step = 1.0
                     min_qty = None
                     min_cost = None
+
+                    # מגבלה לפי buying_power אמיתי מאלפאקה
+                    if alpaca_buying_power > 0:
+                        qty_cap_bp = alpaca_buying_power / max(price, 1e-9)
+                    else:
+                        qty_cap_bp = float("inf")
                 else:
                     market = {}
                     try:
@@ -1183,11 +1225,18 @@ def main():
                     min_qty = (lims.get("amount") or {}).get("min")
                     min_cost = (lims.get("cost") or {}).get("min")
 
+                    # בבורסות אחרות אין לנו buying_power, אז אין מגבלה נוספת מהסוג הזה
+                    qty_cap_bp = float("inf")
+
                 qty_risk = (equity * rm.risk_per_trade) / max(R, 1e-12)
                 qty_cap_equity = (equity * rm.max_position_pct) / max(price, 1e-9)
                 qty_cap_remaining = remaining_notional / max(price, 1e-9)
 
-                qty_raw = max(0.0, min(qty_risk, qty_cap_equity, qty_cap_remaining))
+                # עכשיו הכמות מוגבלת גם לפי buying_power אמיתי (באלפאקה)
+                qty_raw = max(
+                    0.0,
+                    min(qty_risk, qty_cap_equity, qty_cap_remaining, qty_cap_bp),
+                )
                 qty = round_step(qty_raw, step)
 
                 if (min_qty is not None) and (qty < float(min_qty)):
