@@ -8,6 +8,8 @@ class DB:
     - טבלת equity
     - טבלת trades
     - טבלת live_trades
+    - טבלת bot_settings להגדרות מוח גלובליות
+    - טבלת symbol_overrides להגדרות פר-סימבול (למשל חסימת סימבולים)
     בלי לוגים מיותרים ובלי override נוסף של equity.
     """
 
@@ -70,7 +72,6 @@ class DB:
             )
 
             # --- מיגרציה לסכמות ישנות של live_trades עם time_entry ---
-
             try:
                 # 1) אם אין עמודת time_entry – ניצור אותה
                 cur.execute(
@@ -107,6 +108,68 @@ class DB:
             except Exception as e:
                 # לא מפיל את האפליקציה אם המיגרציה נכשלה – רק מדפיס אזהרה
                 print(f"[WARN] live_trades time_entry migration failed: {e}")
+
+            # ------------------------
+            # טבלת bot_settings – הגדרות מוח גלובליות
+            # ------------------------
+            cur.execute(
+                """
+                create table if not exists bot_settings (
+                    key text primary key,
+                    value jsonb not null,
+                    updated_at timestamptz not null default now()
+                );
+                """
+            )
+
+            # לוודא שקיים updated_at גם אם הטבלה הייתה קיימת קודם
+            cur.execute(
+                """
+                alter table bot_settings
+                add column if not exists updated_at timestamptz not null default now();
+                """
+            )
+
+            # ------------------------
+            # טבלת symbol_overrides – הגדרות מוח פר-סימבול
+            # ------------------------
+            cur.execute(
+                """
+                create table if not exists symbol_overrides (
+                    symbol text primary key,
+                    block_new_trades boolean not null default false,
+                    max_risk_per_trade double precision,
+                    notes text,
+                    updated_at timestamptz not null default now()
+                );
+                """
+            )
+
+            # מיגרציה רכה – אם הטבלה קיימת בלי אחד העמודות, נוסיף
+            cur.execute(
+                """
+                alter table symbol_overrides
+                add column if not exists block_new_trades boolean not null default false;
+                """
+            )
+            cur.execute(
+                """
+                alter table symbol_overrides
+                add column if not exists max_risk_per_trade double precision;
+                """
+            )
+            cur.execute(
+                """
+                alter table symbol_overrides
+                add column if not exists notes text;
+                """
+            )
+            cur.execute(
+                """
+                alter table symbol_overrides
+                add column if not exists updated_at timestamptz not null default now();
+                """
+            )
 
     # ------------------------
     # equity
@@ -235,3 +298,63 @@ class DB:
                     int(trade_id),
                 ),
             )
+
+    # ------------------------
+    # Brain helpers – קריאה להגדרות דינמיות
+    # ------------------------
+    def get_bot_settings(self) -> dict:
+        """
+        מחזיר dict של הגדרות גלובליות של הבוט מתוך bot_settings:
+        {
+          "risk_per_trade": 0.02,
+          "something_else": ...
+        }
+        value הוא jsonb, כלומר יכול להיות מספר / מחרוזת / dict וכו'.
+        """
+        settings: dict = {}
+        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+            cur = conn.cursor()
+            cur.execute("select key, value from bot_settings;")
+            rows = cur.fetchall() or []
+            for row in rows:
+                k = row["key"]
+                v = row["value"]
+                settings[k] = v
+        return settings
+
+    def get_symbol_overrides(self) -> dict:
+        """
+        מחזיר dict של הגדרות פר-סימבול מתוך symbol_overrides:
+        {
+          "TSLA": {
+             "block_new_trades": True,
+             "max_risk_per_trade": 0.01,
+             "notes": "נחטף בבר קטן אחד",
+             "updated_at": <datetime>
+          },
+          ...
+        }
+        """
+        overrides: dict = {}
+        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                select symbol,
+                       block_new_trades,
+                       max_risk_per_trade,
+                       notes,
+                       updated_at
+                from symbol_overrides;
+                """
+            )
+            rows = cur.fetchall() or []
+            for row in rows:
+                symbol = row["symbol"]
+                overrides[symbol] = {
+                    "block_new_trades": row["block_new_trades"],
+                    "max_risk_per_trade": row["max_risk_per_trade"],
+                    "notes": row["notes"],
+                    "updated_at": row["updated_at"],
+                }
+        return overrides
