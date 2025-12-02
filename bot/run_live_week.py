@@ -5,6 +5,9 @@
 # - Standardized OHLCV (no KeyError('high'))
 # - Support for CCXT (e.g. Bybit) and Alpaca
 # - Basic TP/SL, time exit and equity logging
+# - Brain integration:
+#     * dynamic risk_per_trade from DB (bot_settings)
+#     * blocked symbols (symbol_overrides)
 # ------------------------------------------------------------
 
 import os
@@ -529,6 +532,31 @@ def append_trade(
 
 
 # ------------------------
+# Brain integration helpers
+# ------------------------
+def load_dynamic_overrides(db):
+    """
+    טוען הגדרות דינמיות מה-DB:
+    - bot_settings: למשל risk_per_trade
+    - symbol_overrides: סימבולים חסומים וכו'
+    """
+    settings = {}
+    symbol_overrides = {}
+    if db is None:
+        return settings, symbol_overrides
+
+    try:
+        if hasattr(db, "get_bot_settings"):
+            settings = db.get_bot_settings()
+        if hasattr(db, "get_symbol_overrides"):
+            symbol_overrides = db.get_symbol_overrides()
+    except Exception as e:
+        print(f"[WARN] load_dynamic_overrides failed: {e}")
+
+    return settings, symbol_overrides
+
+
+# ------------------------
 # main
 # ------------------------
 def main():
@@ -547,6 +575,12 @@ def main():
         except Exception as e:
             print(f"[WARN] DB init failed: {e}")
             db = None
+
+    # Brain: initial dynamic settings + blocked symbols
+    bot_settings, symbol_overrides = load_dynamic_overrides(db)
+    blocked_symbols = {
+        s for s, v in symbol_overrides.items() if v.get("block_new_trades")
+    } if symbol_overrides else set()
 
     # Strategy & trade manager (safe kwargs)
     raw_s = cfg.get("strategy", {}) or {}
@@ -586,9 +620,19 @@ def main():
         except Exception:
             equity = 0.0
 
+    # dynamic risk_per_trade from brain (bot_settings)
+    risk_per_trade = float(portfolio.get("risk_per_trade", 0.03))
+    if "risk_per_trade" in bot_settings:
+        try:
+            dyn = float(bot_settings["risk_per_trade"])
+            print(f"[BRAIN] Using dynamic risk_per_trade={dyn:.4f} from bot_settings")
+            risk_per_trade = dyn
+        except Exception as e:
+            print(f"[WARN] failed to parse dynamic risk_per_trade: {e}")
+
     rm = RiskManager(
         equity=equity,
-        risk_per_trade=float(portfolio.get("risk_per_trade", 0.03)),
+        risk_per_trade=risk_per_trade,
         max_position_pct=float(portfolio.get("max_position_pct", 1.0)),
     )
 
@@ -662,6 +706,17 @@ def main():
             available = set(getattr(conn.exchange, "symbols", []) or [])
             valid_syms = [s for s in cfg_syms if s in available]
 
+            # Brain: filter blocked symbols
+            if blocked_symbols:
+                before = len(valid_syms)
+                valid_syms = [s for s in valid_syms if s not in blocked_symbols]
+                removed = before - len(valid_syms)
+                if removed > 0:
+                    print(
+                        f"[BRAIN] filtered {removed} blocked symbols on connector "
+                        f"'{c.get('name','ccxt')}'"
+                    )
+
             if not valid_syms:
                 print(
                     f"⚠️ No valid symbols for connector '{c.get('name','ccxt')}'. "
@@ -675,6 +730,18 @@ def main():
         else:
             requested_syms = list(c.get("symbols", []) or [])
             valid_syms = requested_syms
+
+            # Brain: filter blocked symbols (Alpaca)
+            if blocked_symbols:
+                before = len(valid_syms)
+                valid_syms = [s for s in valid_syms if s not in blocked_symbols]
+                removed = before - len(valid_syms)
+                if removed > 0:
+                    print(
+                        f"[BRAIN] filtered {removed} blocked symbols on Alpaca "
+                        f"'{c.get('name','alpaca')}'"
+                    )
+
             print(
                 f"✅ Alpaca connector '{c.get('name','alpaca')}' using {len(valid_syms)} symbols from config."
             )
@@ -697,7 +764,31 @@ def main():
     start_time = time.time()
     SECONDS_IN_WEEK = 7 * 24 * 60 * 60
 
+    # Brain: periodic refresh of dynamic settings (every 5 minutes)
+    last_settings_refresh = time.time()
+
     while True:
+        # Brain: refresh dynamic settings from DB every 300 seconds
+        if db and (time.time() - last_settings_refresh) > 300:
+            bot_settings, symbol_overrides = load_dynamic_overrides(db)
+            blocked_symbols = {
+                s for s, v in symbol_overrides.items() if v.get("block_new_trades")
+            } if symbol_overrides else set()
+
+            if "risk_per_trade" in bot_settings:
+                try:
+                    new_risk = float(bot_settings["risk_per_trade"])
+                    if abs(new_risk - rm.risk_per_trade) > 1e-6:
+                        rm.risk_per_trade = new_risk
+                        print(
+                            f"[BRAIN] updated rm.risk_per_trade to "
+                            f"{rm.risk_per_trade:.4f} from DB"
+                        )
+                except Exception as e:
+                    print(f"[WARN] failed to refresh dynamic risk_per_trade: {e}")
+
+            last_settings_refresh = time.time()
+
         now_utc = datetime.now(timezone.utc)
         rows_trades: list[list] = []
         snapshots: dict = {}
@@ -771,9 +862,9 @@ def main():
             # trailing SL
             if atr_now:
                 trail = (
-                    price - tm.atr_trail * atr_now
+                    price - tm.trail_atr_k * atr_now
                     if side == "long"
-                    else price + tm.atr_trail * atr_now
+                    else price + tm.trail_atr_k * atr_now
                 )
                 if side == "long":
                     pos["sl"] = max(pos["sl"], trail)
@@ -1169,6 +1260,10 @@ def main():
         for c_cfg, conn in conns:
             for sym in c_cfg.get("symbols", []):
                 key = (c_cfg.get("name", "ccxt"), sym)
+
+                # Brain: do not open new trades on blocked symbols
+                if sym in blocked_symbols:
+                    continue
 
                 if remaining_notional <= 0:
                     continue
