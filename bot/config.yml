@@ -102,37 +102,69 @@ live_connectors:
       - ARKK   # Innovation
 
       # --- Crypto (Alpaca) - 24/7 Trading ---
-      - BTC/USD
-      - ETH/USD
-      - SOL/USD
-      - ADA/USD
-      - AVAX/USD
-      - DOGE/USD
-      - SHIB/USD
-      - MATIC/USD
-      - XRP/USD
-      - DOT/USD
-      - LINK/USD
-      - LTC/USD
-      - BCH/USD
-      - UNI/USD
       - AAVE/USD
-      - ATOM/USD
-      - ETC/USD
-      - XLM/USD
-      - ALGO/USD
-      - SUSHI/USD
-      - COMP/USD
-      - MKR/USD
-      - OP/USD
-      - ARB/USD
-      - INJ/USD
-      - SEI/USD
-      - SUI/USD
+      - AAVE/USDC
+      - AAVE/USDT
+      - AVAX/USD
+      - AVAX/USDC
+      - AVAX/USDT
+      - BAT/USD
+      - BAT/USDC
+      - BCH/BTC
+      - BCH/USD
+      - BCH/USDC
+      - BCH/USDT
+      - BTC/USD
+      - BTC/USDC
+      - BTC/USDT
+      - CRV/USD
+      - CRV/USDC
+      - DOGE/USD
+      - DOGE/USDC
+      - DOGE/USDT
+      - DOT/USD
+      - DOT/USDC
+      - ETH/BTC
+      - ETH/USD
+      - ETH/USDC
+      - ETH/USDT
+      - GRT/USD
+      - GRT/USDC
+      - LINK/BTC
+      - LINK/USD
+      - LINK/USDC
+      - LINK/USDT
+      - LTC/BTC
+      - LTC/USD
+      - LTC/USDC
+      - LTC/USDT
       - PEPE/USD
-      - BONK/USD
-      - WIF/USD
-
+      - SHIB/USD
+      - SHIB/USDC
+      - SHIB/USDT
+      - SKY/USD
+      - SOL/USD
+      - SOL/USDC
+      - SOL/USDT
+      - SUSHI/USD
+      - SUSHI/USDC
+      - SUSHI/USDT
+      - TRUMP/USD
+      - UNI/BTC
+      - UNI/USD
+      - UNI/USDC
+      - UNI/USDT
+      - USDC/USD
+      - USDG/USD
+      - USDT/USD
+      - USDT/USDC
+      - XRP/USD
+      - XTZ/USD
+      - XTZ/USDC
+      - YFI/USD
+      - YFI/USDC
+      - YFI/USDT
+      
     timeframe: "5m"
     htf_timeframe: "15m"
 
