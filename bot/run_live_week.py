@@ -32,6 +32,12 @@ except Exception:
     def start_heartbeat(*args, **kwargs):
         return None
 
+# Timezone (לשעות מסחר)
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
 THIS_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.dirname(THIS_DIR)
 for p in (ROOT_DIR, THIS_DIR):
@@ -557,6 +563,33 @@ def load_dynamic_overrides(db):
 
 
 # ------------------------
+# Market hours helpers (חוקת "הזמנות כשהבורסה סגורה v1")
+# ------------------------
+def is_alpaca_equity_symbol(symbol: str) -> bool:
+    """
+    באלפאקה:
+    - מניות/ETF = סימבול בלי '/'
+    - קריפטו = BTC/USD, ETH/USD וכו'
+    """
+    return "/" not in symbol
+
+
+def is_equity_market_open(now_utc: datetime, market_tz) -> bool:
+    """
+    בודק אם שוק המניות פתוח לפי זמן מקומי:
+    ימים: שני–שישי
+    שעות: 09:30–16:00 (זמן ניו-יורק, בקירוב)
+    """
+    local = now_utc.astimezone(market_tz)
+    if local.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return False
+
+    open_dt = local.replace(hour=9, minute=30, second=0, microsecond=0)
+    close_dt = local.replace(hour=16, minute=0, second=0, microsecond=0)
+    return open_dt <= local <= close_dt
+
+
+# ------------------------
 # main
 # ------------------------
 def main():
@@ -565,6 +598,24 @@ def main():
     load_dotenv()
     with open(os.path.join(THIS_DIR, "config.yml"), "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
+
+    # Session rules (חוקת הזמנות כשהבורסה סגורה v1)
+    session_rules = cfg.get("session_rules", {}) or {}
+    market_tz_name = session_rules.get("timezone", "America/New_York")
+    if ZoneInfo is not None:
+        try:
+            market_tz = ZoneInfo(market_tz_name)
+        except Exception:
+            print(f"[WARN] failed to load timezone '{market_tz_name}', fallback to UTC")
+            market_tz = timezone.utc
+    else:
+        market_tz = timezone.utc
+
+    equities_market_hours_only = bool(
+        session_rules.get("equities_market_hours_only", False)
+    )
+    # (כרגע לא מממשים ביטול אוטומטי של הזמנות תלויות – כי עובדים רק עם MARKET.
+    #  העיקר: לא לפתוח בכלל הזמנות מניות כשהשוק סגור.)
 
     # DB (optional)
     db = None
@@ -1274,6 +1325,19 @@ def main():
                     cooldowns[key] = max(0, cooldowns.get(key, 0) - 1)
                     continue
 
+                # חוקת "הזמנות כשהבורסה סגורה":
+                # אם מדובר באלפאקה + מניה/ETF – לא פותחים טרייד מחוץ לשעות המסחר.
+                ctype = c_cfg.get("type", "ccxt")
+                if (
+                    ctype == "alpaca"
+                    and equities_market_hours_only
+                    and is_alpaca_equity_symbol(sym)
+                ):
+                    if not is_equity_market_open(now_utc, market_tz):
+                        # שוק סגור – אל תכנס לפוזיציית מניה
+                        # (קריפטו באלפאקה לא נחסם כאן כי יש בו '/')
+                        continue
+
                 row = snapshots.get(key)
                 if row is None or pd.isna(row.get("atr")) or row["atr"] <= 0:
                     continue
@@ -1294,8 +1358,6 @@ def main():
                 R = (price - sl) if side == "long" else (sl - price)
                 if R <= 0:
                     continue
-
-                ctype = c_cfg.get("type", "ccxt")
 
                 if ctype == "alpaca":
                     market = {}
