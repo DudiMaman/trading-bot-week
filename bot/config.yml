@@ -14,36 +14,145 @@ live_connectors:
       - NFLX
       - AMD
       - INTC
+      - ADBE
+      - CRM
+      - ORCL
+      - CSCO
+      - AVGO
+      - IBM
+      - SHOP
+      - UBER
+      - SNOW
+      - PLTR
 
-      # --- Consumer / Finance / Defensive ---
+      # --- Consumer / Retail / Media ---
       - PEP
       - KO
       - MCD
+      - SBUX
+      - NKE
+      - COST
+      - WMT
+      - TGT
+      - HD
+      - LOW
+      - DIS
+      - PG
+      - PM
+      - MO
+      - UL
+      - EL
+      - BKNG
+      - ABNB
+      - ROKU
+
+      # --- Finance / Banks / Payments / Asset Managers ---
       - JPM
       - V
       - MA
+      - BAC
+      - WFC
+      - C
+      - GS
+      - MS
+      - BLK
+      - BX
+      - SCHW
+      - AXP
+      - BRK.B
+      - PYPL
+      - SQ
 
-      # --- Major ETFs ---
+      # --- Healthcare / Pharma / Biotech ---
+      - JNJ
+      - PFE
+      - MRK
+      - ABBV
+      - UNH
+      - LLY
+      - BMY
+      - CVS
+      - TMO
+      - ABT
+
+      # --- Energy / Commodities / Industrials / Defense ---
+      - XOM
+      - CVX
+      - COP
+      - SLB
+      - CAT
+      - BA
+      - GE
+      - LMT
+      - NOC
+      - LIN
+      - RIO
+
+      # --- Major ETFs / Sector ETFs ---
       - SPY    # S&P 500
       - QQQ    # Nasdaq 100
-      - GLD    # זהב
+      - GLD    # Gold
+      - IWM    # Russell 2000
+      - DIA    # Dow Jones
+      - XLK    # Tech
+      - XLF    # Financials
+      - XLV    # Healthcare
+      - XLE    # Energy
+      - SMH    # Semiconductors
+      - ARKK   # Innovation
 
-      # --- Crypto (Alpaca) ---
+      # --- Crypto (Alpaca) - 24/7 Trading ---
       - BTC/USD
       - ETH/USD
       - SOL/USD
+      - ADA/USD
+      - AVAX/USD
+      - DOGE/USD
+      - SHIB/USD
+      - MATIC/USD
+      - XRP/USD
+      - DOT/USD
+      - LINK/USD
+      - LTC/USD
+      - BCH/USD
+      - UNI/USD
+      - AAVE/USD
+      - ATOM/USD
+      - ETC/USD
+      - XLM/USD
+      - ALGO/USD
+      - SUSHI/USD
+      - COMP/USD
+      - MKR/USD
+      - OP/USD
+      - ARB/USD
+      - INJ/USD
+      - SEI/USD
+      - SUI/USD
+      - PEPE/USD
+      - BONK/USD
+      - WIF/USD
 
     timeframe: "5m"
     htf_timeframe: "15m"
 
-  # - name: bybit
-  #   type: ccxt
-  #   exchange_id: bybit
-  #   paper: false
-  #   default_type: swap
-  #   symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT", "XMR/USDT:USDT", "XRP/USDT:USDT", "SOL/USDT:USDT"]
-  #   timeframe: "5m"
-  #   htf_timeframe: "15m"
+# אפשר להשאיר את החיבור ל-Bybit כמפורט או למחוק אם לא בשימוש כרגע
+#  - name: bybit
+#    type: ccxt
+#    exchange_id: bybit
+#    paper: false
+#    default_type: swap
+#    symbols: ["BTC/USDT:USDT", "ETH/USDT:USDT", "XMR/USDT:USDT", "XRP/USDT:USDT", "SOL/USDT:USDT"]
+#    timeframe: "5m"
+#    htf_timeframe: "15m"
+
+# --- Session rules (לפי "חוקת הזמנות כשהבורסה סגורה v1") ---
+session_rules:
+  timezone: "America/New_York"          # שעה רשמית של שוק המניות
+  equities_market_hours_only: true      # מניות – לעבוד רק בשעות מסחר
+  cancel_equity_orders_at_close: true   # לבטל הוראות מניות פתוחות בסגירה
+  cancel_stale_equity_orders_on_open: true  # לבטל הוראות מניות "ישנות" בפתיחה (לא מהיום)
+  crypto_24_7: true                     # קריפטו – מותר 24/7
 
 strategy:
   donchian_len: 14
@@ -59,6 +168,6 @@ trade_manager:
   max_bars_in_trade: 120
 
 portfolio:
-  equity0: "auto"      # הבוט מחשב בעצמו את גודל ההון ההתחלתי
-  risk_per_trade: 0.02 # סיכון מקסימלי בסטופ – 2% מההון לכל טרייד
-  max_position_pct: 0.2 # חשיפה מקסימלית למניה אחת – 20% מההון הכולל
+  equity0: "auto"        # הבוט מחשב בעצמו את גודל ההון ההתחלתי
+  risk_per_trade: 0.02   # סיכון מקסימלי בסטופ – 2% מההון לכל טרייד
+  max_position_pct: 0.2  # חשיפה מקסימלית לנכס אחד – 20% מההון הכולל
