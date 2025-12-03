@@ -5,9 +5,10 @@
 # - Standardized OHLCV (no KeyError('high'))
 # - Support for CCXT (e.g. Bybit) and Alpaca
 # - Basic TP/SL, time exit and equity logging
-# - Brain integration:
-#     * dynamic risk_per_trade from DB (bot_settings)
-#     * blocked symbols (symbol_overrides)
+# - Brain integration (analyzer_v2):
+#     * dynamic risk_per_trade / exposure / SL-TP parameters
+#     * blocked symbols
+#     * hard cap per-position notional
 # ------------------------------------------------------------
 
 import os
@@ -24,7 +25,7 @@ from dotenv import load_dotenv
 
 import ccxt
 
-from bot.safety import guard_open
+from bot.safety import guard_open  # currently not used but kept for future rules
 
 try:
     from bot.monitor import start_heartbeat
@@ -49,6 +50,7 @@ from bot.risk import RiskManager, TradeManager
 from bot.utils import atr as calc_atr
 from bot.connectors.ccxt_connector import CCXTConnector
 from bot.db_writer import DB
+from bot.analyzer_v2 import get_brain_settings, BrainSettings
 
 try:
     from bot.connectors.alpaca_connector import AlpacaConnector
@@ -538,31 +540,6 @@ def append_trade(
 
 
 # ------------------------
-# Brain integration helpers
-# ------------------------
-def load_dynamic_overrides(db):
-    """
-    טוען הגדרות דינמיות מה-DB:
-    - bot_settings: למשל risk_per_trade
-    - symbol_overrides: סימבולים חסומים וכו'
-    """
-    settings = {}
-    symbol_overrides = {}
-    if db is None:
-        return settings, symbol_overrides
-
-    try:
-        if hasattr(db, "get_bot_settings"):
-            settings = db.get_bot_settings()
-        if hasattr(db, "get_symbol_overrides"):
-            symbol_overrides = db.get_symbol_overrides()
-    except Exception as e:
-        print(f"[WARN] load_dynamic_overrides failed: {e}")
-
-    return settings, symbol_overrides
-
-
-# ------------------------
 # Market hours helpers (חוקת "הזמנות כשהבורסה סגורה v1")
 # ------------------------
 def is_alpaca_equity_symbol(symbol: str) -> bool:
@@ -614,8 +591,6 @@ def main():
     equities_market_hours_only = bool(
         session_rules.get("equities_market_hours_only", False)
     )
-    # (כרגע לא מממשים ביטול אוטומטי של הזמנות תלויות – כי עובדים רק עם MARKET.
-    #  העיקר: לא לפתוח בכלל הזמנות מניות כשהשוק סגור.)
 
     # DB (optional)
     db = None
@@ -627,11 +602,11 @@ def main():
             print(f"[WARN] DB init failed: {e}")
             db = None
 
-    # Brain: initial dynamic settings + blocked symbols
-    bot_settings, symbol_overrides = load_dynamic_overrides(db)
-    blocked_symbols = {
-        s for s, v in symbol_overrides.items() if v.get("block_new_trades")
-    } if symbol_overrides else set()
+    # Brain state
+    brain_settings: BrainSettings | None = None
+    blocked_symbols: set[str] = set()
+    max_notional_pct_hard: float = 0.20  # fallback, המוח יכול לעדכן
+    last_brain_update_ts: float = 0.0
 
     # Strategy & trade manager (safe kwargs)
     raw_s = cfg.get("strategy", {}) or {}
@@ -671,19 +646,10 @@ def main():
         except Exception:
             equity = 0.0
 
-    # dynamic risk_per_trade from brain (bot_settings)
-    risk_per_trade = float(portfolio.get("risk_per_trade", 0.03))
-    if "risk_per_trade" in bot_settings:
-        try:
-            dyn = float(bot_settings["risk_per_trade"])
-            print(f"[BRAIN] Using dynamic risk_per_trade={dyn:.4f} from bot_settings")
-            risk_per_trade = dyn
-        except Exception as e:
-            print(f"[WARN] failed to parse dynamic risk_per_trade: {e}")
-
+    # RiskManager (הערכים יתעדכנו מהמוח)
     rm = RiskManager(
         equity=equity,
-        risk_per_trade=risk_per_trade,
+        risk_per_trade=float(portfolio.get("risk_per_trade", 0.03)),
         max_position_pct=float(portfolio.get("max_position_pct", 1.0)),
     )
 
@@ -755,18 +721,9 @@ def main():
                 cfg_syms = requested_syms
 
             available = set(getattr(conn.exchange, "symbols", []) or [])
-            valid_syms = [s for s in cfg_syms if s in available]
 
-            # Brain: filter blocked symbols
-            if blocked_symbols:
-                before = len(valid_syms)
-                valid_syms = [s for s in valid_syms if s not in blocked_symbols]
-                removed = before - len(valid_syms)
-                if removed > 0:
-                    print(
-                        f"[BRAIN] filtered {removed} blocked symbols on connector "
-                        f"'{c.get('name','ccxt')}'"
-                    )
+
+            valid_syms = [s for s in cfg_syms if s in available]
 
             if not valid_syms:
                 print(
@@ -780,18 +737,9 @@ def main():
                 )
         else:
             requested_syms = list(c.get("symbols", []) or [])
-            valid_syms = requested_syms
 
-            # Brain: filter blocked symbols (Alpaca)
-            if blocked_symbols:
-                before = len(valid_syms)
-                valid_syms = [s for s in valid_syms if s not in blocked_symbols]
-                removed = before - len(valid_syms)
-                if removed > 0:
-                    print(
-                        f"[BRAIN] filtered {removed} blocked symbols on Alpaca "
-                        f"'{c.get('name','alpaca')}'"
-                    )
+
+            valid_syms = requested_syms
 
             print(
                 f"✅ Alpaca connector '{c.get('name','alpaca')}' using {len(valid_syms)} symbols from config."
@@ -815,30 +763,40 @@ def main():
     start_time = time.time()
     SECONDS_IN_WEEK = 7 * 24 * 60 * 60
 
-    # Brain: periodic refresh of dynamic settings (every 5 minutes)
-    last_settings_refresh = time.time()
-
     while True:
-        # Brain: refresh dynamic settings from DB every 300 seconds
-        if db and (time.time() - last_settings_refresh) > 300:
-            bot_settings, symbol_overrides = load_dynamic_overrides(db)
-            blocked_symbols = {
-                s for s, v in symbol_overrides.items() if v.get("block_new_trades")
-            } if symbol_overrides else set()
+        # --- Brain update (every ~5 minutes) ---
+        if db:
+            try:
+                now_ts = time.time()
+                if now_ts - last_brain_update_ts > 300:
+                    bs = get_brain_settings(config_id=config_id)
+                    brain_settings = bs
+                    last_brain_update_ts = now_ts
 
-            if "risk_per_trade" in bot_settings:
-                try:
-                    new_risk = float(bot_settings["risk_per_trade"])
-                    if abs(new_risk - rm.risk_per_trade) > 1e-6:
-                        rm.risk_per_trade = new_risk
-                        print(
-                            f"[BRAIN] updated rm.risk_per_trade to "
-                            f"{rm.risk_per_trade:.4f} from DB"
-                        )
-                except Exception as e:
-                    print(f"[WARN] failed to refresh dynamic risk_per_trade: {e}")
+                    # החלת פרמטרים מהמוח
+                    rm.risk_per_trade = bs.risk_per_trade
+                    rm.max_position_pct = bs.max_portfolio_exposure
 
-            last_settings_refresh = time.time()
+                    tm.atr_k_sl = bs.atr_k_sl
+                    tm.r1_R = bs.r1_R
+                    tm.r2_R = bs.r2_R
+                    tm.p1_pct = bs.p1_pct
+                    tm.p2_pct = bs.p2_pct
+                    tm.be_after_R = bs.be_after_R
+                    tm.trail_atr_k = bs.trail_atr_k
+                    tm.max_bars_in_trade = bs.max_bars_in_trade
+
+                    blocked_symbols = set(bs.blocked_symbols or set())
+                    max_notional_pct_hard = bs.max_notional_pct_hard
+
+                    print(
+                        f"[BRAIN] mode={bs.mode} "
+                        f"risk_per_trade={bs.risk_per_trade:.4f} "
+                        f"max_exposure={bs.max_portfolio_exposure:.2f} "
+                        f"blocked={len(blocked_symbols)}"
+                    )
+            except Exception as e:
+                print(f"[WARN] brain update failed: {e}")
 
         now_utc = datetime.now(timezone.utc)
         rows_trades: list[list] = []
@@ -910,12 +868,13 @@ def main():
             R = pos["R"]
             conn = pos.get("conn")
 
-            # trailing SL
+            # trailing SL (דינמי לפי המוח)
             if atr_now:
+                k_trail = getattr(tm, "trail_atr_k", 1.2)
                 trail = (
-                    price - tm.trail_atr_k * atr_now
+                    price - k_trail * atr_now
                     if side == "long"
-                    else price + tm.trail_atr_k * atr_now
+                    else price + k_trail * atr_now
                 )
                 if side == "long":
                     pos["sl"] = max(pos["sl"], trail)
@@ -924,10 +883,11 @@ def main():
 
             # move SL to BE after certain R
             if not pos["moved_to_be"] and atr_now:
-                if side == "long" and price >= entry + tm.be_after_R * R:
+                be_after_R = getattr(tm, "be_after_R", 0.8)
+                if side == "long" and price >= entry + be_after_R * R:
                     pos["sl"] = max(pos["sl"], entry)
                     pos["moved_to_be"] = True
-                if side == "short" and price <= entry - tm.be_after_R * R:
+                if side == "short" and price <= entry - be_after_R * R:
                     pos["sl"] = min(pos["sl"], entry)
                     pos["moved_to_be"] = True
 
@@ -936,7 +896,7 @@ def main():
                 (side == "long" and price >= pos["tp1"])
                 or (side == "short" and price <= pos["tp1"])
             ):
-                requested_close_qty = qty * tm.p1_pct
+                requested_close_qty = qty * getattr(tm, "p1_pct", 0.5)
                 exit_side = "sell" if side == "long" else "buy"
 
                 close_qty, live_qty = compute_close_qty(
@@ -1021,7 +981,7 @@ def main():
                 (side == "long" and price >= pos["tp2"])
                 or (side == "short" and price <= pos["tp2"])
             ):
-                requested_close_qty = pos["qty"] * tm.p2_pct
+                requested_close_qty = pos["qty"] * getattr(tm, "p2_pct", 0.5)
                 exit_side = "sell" if side == "long" else "buy"
 
                 close_qty, live_qty = compute_close_qty(
@@ -1199,7 +1159,9 @@ def main():
 
             # TIME exit
             pos["bars"] += 1
-            if pos["bars"] >= tm.max_bars_in_trade and not pos["tp2_done"]:
+            max_bars_in_trade = getattr(tm, "max_bars_in_trade", 48)
+            if pos["bars"] >= max_bars_in_trade and not pos["tp2_done"]:
+
                 exit_side = "sell" if side == "long" else "buy"
                 requested_close_qty = pos["qty"]
 
@@ -1334,8 +1296,6 @@ def main():
                     and is_alpaca_equity_symbol(sym)
                 ):
                     if not is_equity_market_open(now_utc, market_tz):
-                        # שוק סגור – אל תכנס לפוזיציית מניה
-                        # (קריפטו באלפאקה לא נחסם כאן כי יש בו '/')
                         continue
 
                 row = snapshots.get(key)
@@ -1350,10 +1310,11 @@ def main():
                 atr_now = float(row["atr"])
                 side = "long" if sig == 1 else "short"
 
+                atr_k_sl = getattr(tm, "atr_k_sl", 1.5)
                 sl = (
-                    price - tm.atr_k_sl * atr_now
+                    price - atr_k_sl * atr_now
                     if side == "long"
-                    else price + tm.atr_k_sl * atr_now
+                    else price + atr_k_sl * atr_now
                 )
                 R = (price - sl) if side == "long" else (sl - price)
                 if R <= 0:
@@ -1389,10 +1350,19 @@ def main():
                 qty_cap_equity = (equity * rm.max_position_pct) / max(price, 1e-9)
                 qty_cap_remaining = remaining_notional / max(price, 1e-9)
 
-                # עכשיו הכמות מוגבלת גם לפי buying_power אמיתי (באלפאקה)
+                # Hard cap per position (פתרון טסלה) – למשל 20% מהתיק
+                hard_notional_cap = max_notional_pct_hard * equity
+                qty_cap_hard = hard_notional_cap / max(price, 1e-9)
+
                 qty_raw = max(
                     0.0,
-                    min(qty_risk, qty_cap_equity, qty_cap_remaining, qty_cap_bp),
+                    min(
+                        qty_risk,
+                        qty_cap_equity,
+                        qty_cap_remaining,
+                        qty_cap_bp,
+                        qty_cap_hard,
+                    ),
                 )
                 qty = round_step(qty_raw, step)
 
@@ -1407,15 +1377,18 @@ def main():
                 if qty <= 0:
                     continue
 
+                r1_R = getattr(tm, "r1_R", 1.0)
+                r2_R = getattr(tm, "r2_R", 2.5)
+
                 tp1 = (
-                    price + tm.r1_R * R
+                    price + r1_R * R
                     if side == "long"
-                    else price - tm.r1_R * R
+                    else price - r1_R * R
                 )
                 tp2 = (
-                    price + tm.r2_R * R
+                    price + r2_R * R
                     if side == "long"
-                    else price - tm.r2_R * R
+                    else price - r2_R * R
                 )
 
                 order_side = "buy" if side == "long" else "sell"
