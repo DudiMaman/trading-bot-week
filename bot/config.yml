@@ -154,21 +154,11 @@ live_connectors:
       - UNI/USD
       - UNI/USDC
       - UNI/USDT
-      - USDC/USD
-      - USDG/USD
-      - USDT/USD
-      - USDT/USDC
-      - XRP/USD
-      - XTZ/USD
-      - XTZ/USDC
-      - YFI/USD
-      - YFI/USDC
-      - YFI/USDT
-      
+      # *** שים לב: זוגות stable/Stable (USDC/USD, USDG/USD, USDT/USD, USDT/USDC) הוסרו בכוונה ***
+
     timeframe: "5m"
     htf_timeframe: "15m"
 
-# אפשר להשאיר את החיבור ל-Bybit כמפורט או למחוק אם לא בשימוש כרגע
 #  - name: bybit
 #    type: ccxt
 #    exchange_id: bybit
@@ -182,8 +172,8 @@ live_connectors:
 session_rules:
   timezone: "America/New_York"          # שעה רשמית של שוק המניות
   equities_market_hours_only: true      # מניות – לעבוד רק בשעות מסחר
-  cancel_equity_orders_at_close: true   # לבטל הוראות מניות פתוחות בסגירה
-  cancel_stale_equity_orders_on_open: true  # לבטל הוראות מניות "ישנות" בפתיחה (לא מהיום)
+  cancel_equity_orders_at_close: true   # (עדיין לא ממומש בקוד)
+  cancel_stale_equity_orders_on_open: true  # (עדיין לא ממומש בקוד)
   crypto_24_7: true                     # קריפטו – מותר 24/7
 
 strategy:
