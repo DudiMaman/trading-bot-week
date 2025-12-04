@@ -9,6 +9,7 @@
 #     * dynamic risk_per_trade / exposure / SL-TP parameters
 #     * blocked symbols
 #     * hard cap per-position notional
+# - Hard filter: never trade stable/stable pairs (USDC/USD, USDT/USDC, etc.)
 # ------------------------------------------------------------
 
 import os
@@ -126,6 +127,50 @@ def normalize_position_qty(conn, symbol: str, qty: float) -> float:
         return 0.0
 
     return qty
+
+
+# ------------------------
+# Stable-pair helpers (avoid USDC/USD, USDT/USDC וכו')
+# ------------------------
+STABLE_TOKENS = {"USD", "USDT", "USDC", "USDG"}
+
+
+def _extract_base_quote(symbol: str):
+    """
+    Tries to infer base/quote from a symbol:
+    - 'BTC/USDT'        -> ('BTC', 'USDT')
+    - 'BTC/USDT:USDT'   -> ('BTC', 'USDT')
+    - 'USDTUSD'         -> ('USDT', 'USD')
+    Returns (base, quote) or (None, None) if cannot parse.
+    """
+    if not symbol:
+        return None, None
+
+    core = symbol.upper()
+    core = core.split(":")[0]  # remove futures suffix if exists
+
+    if "/" in core:
+        base, quote = core.split("/", 1)
+        return base.strip(), quote.strip()
+
+    # no '/', guess by stable suffix
+    for q in sorted(STABLE_TOKENS, key=len, reverse=True):
+        if core.endswith(q):
+            base = core[: -len(q)]
+            base = base.strip()
+            if base:
+                return base, q
+    return None, None
+
+
+def is_stable_pair_symbol(symbol: str) -> bool:
+    """
+    Returns True if BOTH sides of the pair are stablecoins / USD.
+    """
+    base, quote = _extract_base_quote(symbol)
+    if not base or not quote:
+        return False
+    return base in STABLE_TOKENS and quote in STABLE_TOKENS
 
 
 # ------------------------
@@ -306,8 +351,8 @@ def standardize_ohlcv(df_raw, symbol: str = ""):
         "open": ["open", "o"],
         "high": ["high", "h"],
         "low":  ["low", "l"],
-        "close":["close", "c"],
-        "volume":["volume", "v"],
+        "close": ["close", "c"],
+        "volume": ["volume", "v"],
     }
 
     for target, candidates in mapping.items():
@@ -547,6 +592,7 @@ def is_alpaca_equity_symbol(symbol: str) -> bool:
     באלפאקה:
     - מניות/ETF = סימבול בלי '/'
     - קריפטו = BTC/USD, ETH/USD וכו'
+    (הקובץ עובד עם שמות כמו 'ETH/USD' בקונפיג, אז זה פשוט.)
     """
     return "/" not in symbol
 
@@ -657,7 +703,7 @@ def main():
 
     # initial equity log
     now_utc = datetime.now(timezone.utc)
-    write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
+    write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}")])
     if db:
         try:
             db.write_equity({"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")})
@@ -721,9 +767,9 @@ def main():
                 cfg_syms = requested_syms
 
             available = set(getattr(conn.exchange, "symbols", []) or [])
-
-
             valid_syms = [s for s in cfg_syms if s in available]
+            # Hard guard: never trade stable/stable pairs even if בקונפיג
+            valid_syms = [s for s in valid_syms if not is_stable_pair_symbol(s)]
 
             if not valid_syms:
                 print(
@@ -737,9 +783,8 @@ def main():
                 )
         else:
             requested_syms = list(c.get("symbols", []) or [])
-
-
-            valid_syms = requested_syms
+            # Hard guard: never trade stable/stable pairs even if בקונפיג
+            valid_syms = [s for s in requested_syms if not is_stable_pair_symbol(s)]
 
             print(
                 f"✅ Alpaca connector '{c.get('name','alpaca')}' using {len(valid_syms)} symbols from config."
@@ -811,6 +856,9 @@ def main():
             tf = c_cfg.get("timeframe", "1m")
             htf = c_cfg.get("htf_timeframe", "5m")
             for sym in c_cfg.get("symbols", []):
+                # בטיחות נוספת: גם כאן לא ניגשים בכלל לזוגות stable/stable
+                if is_stable_pair_symbol(sym):
+                    continue
                 try:
                     ltf_df_raw = conn.fetch_ohlcv(sym, tf, limit=200)
                     htf_df_raw = conn.fetch_ohlcv(sym, htf, limit=200)
@@ -845,7 +893,7 @@ def main():
             if time.time() - start_time >= SECONDS_IN_WEEK:
                 break
 
-            write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
+            write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}")])
             if db:
                 try:
                     db.write_equity({"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")})
@@ -1161,7 +1209,6 @@ def main():
             pos["bars"] += 1
             max_bars_in_trade = getattr(tm, "max_bars_in_trade", 48)
             if pos["bars"] >= max_bars_in_trade and not pos["tp2_done"]:
-
                 exit_side = "sell" if side == "long" else "buy"
                 requested_close_qty = pos["qty"]
 
@@ -1273,6 +1320,10 @@ def main():
         for c_cfg, conn in conns:
             for sym in c_cfg.get("symbols", []):
                 key = (c_cfg.get("name", "ccxt"), sym)
+
+                # Hard guard: לעולם לא לפתוח טרייד על stable/stable
+                if is_stable_pair_symbol(sym):
+                    continue
 
                 # Brain: do not open new trades on blocked symbols
                 if sym in blocked_symbols:
@@ -1461,7 +1512,7 @@ def main():
                 except Exception as e:
                     print(f"[WARN] DB write_trades failed: {e}")
 
-        write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
+        write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}")])
         if db:
             try:
                 db.write_equity({"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")})
