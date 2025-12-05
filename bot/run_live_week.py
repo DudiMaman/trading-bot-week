@@ -387,6 +387,38 @@ def standardize_ohlcv(df_raw, symbol: str = ""):
 
 
 # ------------------------
+# Alpaca timeframe normalization
+# ------------------------
+def normalize_alpaca_timeframe(tf: str) -> str:
+    """
+    Map generic timeframes like '5m', '15m', '1h', '1d'
+    to Alpaca's expected strings: '5Min', '15Min', '1Hour', '1Day'.
+    If already looks like an Alpaca timeframe, return as is.
+    """
+    if not tf:
+        return "5Min"
+    tf = str(tf)
+
+    mapping = {
+        "1m": "1Min",
+        "3m": "3Min",
+        "5m": "5Min",
+        "15m": "15Min",
+        "30m": "30Min",
+        "1h": "1Hour",
+        "4h": "4Hour",
+        "1d": "1Day",
+        "1D": "1Day",
+    }
+
+    # already an Alpaca-style string
+    if tf in mapping.values():
+        return tf
+
+    return mapping.get(tf, tf)
+
+
+# ------------------------
 # Live position helpers
 # ------------------------
 def get_live_position_qty(conn, symbol: str, side: str):
@@ -854,8 +886,16 @@ def main():
 
         # ---------------- fetch & features ----------------
         for c_cfg, conn in conns:
-            tf = c_cfg.get("timeframe", "1m")
-            htf = c_cfg.get("htf_timeframe", "5m")
+            ctype = c_cfg.get("type", "ccxt")
+            tf_raw = c_cfg.get("timeframe", "1m")
+            htf_raw = c_cfg.get("htf_timeframe", "5m")
+
+            if ctype == "alpaca":
+                tf = normalize_alpaca_timeframe(tf_raw)
+                htf = normalize_alpaca_timeframe(htf_raw)
+            else:
+                tf, htf = tf_raw, htf_raw
+
             for sym in c_cfg.get("symbols", []):
                 # בטיחות נוספת: גם כאן לא ניגשים בכלל לזוגות stable/stable
                 if is_stable_pair_symbol(sym):
