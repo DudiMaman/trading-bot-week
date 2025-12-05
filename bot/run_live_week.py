@@ -703,7 +703,8 @@ def main():
 
     # initial equity log
     now_utc = datetime.now(timezone.utc)
-    write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
+    equity_row = [now_utc.isoformat(), f"{equity:.2f}"]
+    write_csv(EQUITY_CSV, ["time", "equity"], [equity_row])
     if db:
         try:
             db.write_equity({"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")})
@@ -893,7 +894,8 @@ def main():
             if time.time() - start_time >= SECONDS_IN_WEEK:
                 break
 
-            write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
+            equity_row = [now_utc.isoformat(), f"{equity:.2f}"]
+            write_csv(EQUITY_CSV, ["time", "equity"], [equity_row])
             if db:
                 try:
                     db.write_equity({"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")})
@@ -1512,7 +1514,8 @@ def main():
                 except Exception as e:
                     print(f"[WARN] DB write_trades failed: {e}")
 
-        write_csv(EQUITY_CSV, ["time", "equity"], [[now_utc.isoformat(), f"{equity:.2f}"]])
+        equity_row = [now_utc.isoformat(), f"{equity:.2f}"]
+        write_csv(EQUITY_CSV, ["time", "equity"], [equity_row])
         if db:
             try:
                 db.write_equity({"time": now_utc.isoformat(), "equity": float(f"{equity:.2f}")})
