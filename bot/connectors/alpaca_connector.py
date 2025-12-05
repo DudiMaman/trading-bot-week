@@ -68,14 +68,28 @@ class AlpacaConnector(BaseConnector):
         return "/" in symbol
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 600) -> pd.DataFrame:
+        """
+        מחזיר DataFrame בפורמט דומה ל-ccxt:
+        אינדקס = timestamp, עמודות = open, high, low, close, volume (מה שקיים בפועל).
+        """
         tf = self._normalize_timeframe(timeframe)
 
         if self._is_crypto(symbol):
             # קריפטו – משתמשים ב-get_crypto_bars
-            bars = self.api.get_crypto_bars(symbol, tf, limit=limit).df
+            # חשוב: להעביר timeframe כארגומנט בשם, אחרת הספרייה החדשה לא שולחת אותו ל-API
+            bars = self.api.get_crypto_bars(
+                symbol,
+                timeframe=tf,
+                limit=limit,
+            ).df
         else:
-            # מניות / ETF
-            bars = self.api.get_bars(symbol, tf, limit=limit).df
+            # מניות / ETF – get_bars של מניות
+            # גם כאן – timeframe כארגומנט בשם
+            bars = self.api.get_bars(
+                symbol,
+                timeframe=tf,
+                limit=limit,
+            ).df
 
         # הופכים לאינדקס רגיל
         df = bars.reset_index()
@@ -83,7 +97,7 @@ class AlpacaConnector(BaseConnector):
         # מנסים לזהות עמודת זמן:
         # 1. אם יש 'timestamp' / 'time' / 't' בעמודות – ניקח אותה
         # 2. אחרת – נניח שהעמודה הראשונה היא הזמן
-        ts_col_candidates = ['timestamp', 'time', 't']
+        ts_col_candidates = ["timestamp", "time", "t"]
         ts_col = None
         for c in ts_col_candidates:
             if c in df.columns:
@@ -92,36 +106,35 @@ class AlpacaConnector(BaseConnector):
         if ts_col is None:
             ts_col = df.columns[0]
 
-        df = df.rename(columns={ts_col: 'ts'})
+        df = df.rename(columns={ts_col: "ts"})
 
         # שומרים רק את מה שקיים בפועל מתוך OHLCV
-        ohlcv_cols = ['open', 'high', 'low', 'close', 'volume']
-        cols = ['ts'] + [c for c in ohlcv_cols if c in df.columns]
+        ohlcv_cols = ["open", "high", "low", "close", "volume"]
+        cols = ["ts"] + [c for c in ohlcv_cols if c in df.columns]
         df = df[cols]
 
-        df['ts'] = pd.to_datetime(df['ts'])
-        df.set_index('ts', inplace=True)
+        df["ts"] = pd.to_datetime(df["ts"])
+        df.set_index("ts", inplace=True)
         return df
-
 
     def create_market_order(self, symbol: str, side: str, qty: float) -> Dict[str, Any]:
         """
         מניות: time_in_force = 'day'
         קריפטו: לפי אלפקה צריך GTC/IOC/FOK – נלך על 'gtc'
         """
-        tif = 'gtc' if self._is_crypto(symbol) else 'day'
+        tif = "gtc" if self._is_crypto(symbol) else "day"
 
         order = self.api.submit_order(
             symbol=symbol,
             qty=qty,
             side=side,
-            type='market',
+            type="market",
             time_in_force=tif,
         )
-        return getattr(order, '_raw', {'id': str(order.id)})
+        return getattr(order, "_raw", {"id": str(order.id)})
 
     def get_precision(self, symbol: str) -> Dict[str, Any]:
-        return {'amount_min': 1.0, 'price_tick': 0.01, 'amount_step': 1.0}
+        return {"amount_min": 1.0, "price_tick": 0.01, "amount_step": 1.0}
 
     def account_equity(self) -> float:
         return float(self.api.get_account().equity)
