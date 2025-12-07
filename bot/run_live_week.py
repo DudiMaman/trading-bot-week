@@ -46,7 +46,7 @@ for p in (ROOT_DIR, THIS_DIR):
     if p not in sys.path:
         sys.path.append(p)
 
-from bot.strategies import get_strategy_class
+from bot.strategies import get_strategy_class, DonchianTrendADXRSI
 from bot.risk import RiskManager, TradeManager
 from bot.utils import atr as calc_atr
 from bot.connectors.ccxt_connector import CCXTConnector
