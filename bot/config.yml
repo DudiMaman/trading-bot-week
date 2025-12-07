@@ -177,6 +177,7 @@ session_rules:
   crypto_24_7: true                     # קריפטו – מותר 24/7
 
 strategy:
+  name: DONCHIAN_ADX_RSI   # ברירת מחדל אם אין STRATEGY_NAME ב-ENV
   donchian_len: 14
   adx_min: 18
 
