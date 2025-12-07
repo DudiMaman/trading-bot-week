@@ -686,15 +686,36 @@ def main():
     max_notional_pct_hard: float = 0.20  # fallback, המוח יכול לעדכן
     last_brain_update_ts: float = 0.0
 
-    # Strategy & trade manager (safe kwargs + STRATEGY_NAME)
+        # Strategy & trade manager (safe kwargs + בחירת סטרטגיה דינמית)
     raw_s = cfg.get("strategy", {}) or {}
 
     # שם הסטרטגיה:
-    # 1. ENV: STRATEGY_NAME
-    # 2. אם אין – מתוך הקונפיג (strategy.name)
-    # 3. אם גם שם אין – default DONCHIAN_ADX_RSI
+    # 1. קודם מה-ENV (STRATEGY_NAME)
+    # 2. אם אין – מה config.yml תחת strategy.name
+    # 3. אם גם אין – ברירת מחדל: DONCHIAN_ADX_RSI
     strategy_name = os.getenv("STRATEGY_NAME", raw_s.get("name", "DONCHIAN_ADX_RSI"))
     StrategyClass = get_strategy_class(strategy_name)
+
+    accepted_s = set(inspect.signature(StrategyClass).parameters.keys())
+    clean_s = {
+        k: v
+        for k, v in raw_s.items()
+        if k in accepted_s and k != "name"
+    }
+    unknown_s = sorted(set(raw_s.keys()) - accepted_s - {"name"})
+    if unknown_s:
+        print(f"⚠️ Ignoring unknown strategy keys for {strategy_name}: {unknown_s}")
+
+    strat = StrategyClass(**clean_s)
+
+    # אורך Donchian לצורך fallback ב-run_live_week
+    donchian_len_cfg = int(getattr(strat, "dlen", raw_s.get("donchian_len", 4)))
+
+    print(
+        f"[STRATEGY] Using {StrategyClass.__name__} "
+        f"(name={strategy_name}), dlen={donchian_len_cfg}"
+    )
+
 
     accepted_s = set(inspect.signature(StrategyClass).parameters.keys())
     clean_s = {k: v for k, v in raw_s.items() if k in accepted_s and k != "name"}
