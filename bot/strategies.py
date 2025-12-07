@@ -240,12 +240,157 @@ class MeanReversionRSI:
 
 
 # --------------------------------------------------------------------
+# Strategy 4: RSITrendPullback – טרנד + משיכת מחיר (pullback)
+# --------------------------------------------------------------------
+class RSITrendPullback:
+    """
+    אסטרטגיית טרנד + משיכת מחיר (pullback):
+
+    לונג:
+      - טרנד עולה: מחיר מעל EMA טרנד (HTF)
+      - מחיר מתחת/סמוך ל-EMA מהיר על ה-LTF (pullback)
+      - RSI ברמות נמוכות יחסית (קניית דיפ בטרנד)
+
+    שורט:
+      - טרנד יורד: מחיר מתחת EMA טרנד
+      - מחיר מעל/סמוך ל-EMA מהיר על ה-LTF (pullback נגד הכיוון)
+      - RSI ברמות גבוהות (מכירת ספייק בטרנד יורד)
+    """
+
+    def __init__(
+        self,
+        rsi_len: int = 14,
+        rsi_long_max: float = 45,
+        rsi_short_min: float = 55,
+        ema_fast_len: int = 20,
+        ema_trend_len: int = 200,
+        pullback_pct: float = 0.01,
+    ):
+        self.rsi_len = int(rsi_len)
+        self.rsi_long_max = float(rsi_long_max)
+        self.rsi_short_min = float(rsi_short_min)
+        self.ema_fast_len = int(ema_fast_len)
+        self.ema_trend_len = int(ema_trend_len)
+        self.pullback_pct = float(pullback_pct)
+
+        # fallback length לדונצ'יאן אם צריך
+        self.dlen = 20
+
+    def prepare(self, df_ltf: pd.DataFrame, df_htf: pd.DataFrame):
+        df = df_ltf.copy()
+
+        # RSI
+        df["rsi"] = rsi(df["close"], self.rsi_len)
+
+        # EMA קצר על LTF
+        df["ema_fast"] = df["close"].ewm(span=self.ema_fast_len, adjust=False).mean()
+
+        # EMA טרנד על HTF
+        htf_ema_trend = df_htf["close"].ewm(span=self.ema_trend_len, adjust=False).mean()
+        htf_ema_trend = htf_ema_trend.reindex(df.index, method="ffill")
+        df["trend_up"] = (df["close"] > htf_ema_trend).astype(int)
+        df["trend_down"] = (df["close"] < htf_ema_trend).astype(int)
+
+        # pullback רמות ביחס ל-EMA המהיר
+        pullback_long_level = df["ema_fast"] * (1.0 - self.pullback_pct)
+        pullback_short_level = df["ema_fast"] * (1.0 + self.pullback_pct)
+
+        df["long_setup"] = (
+            (df["trend_up"] == 1)
+            & (df["close"] <= pullback_long_level)
+            & (df["rsi"] <= self.rsi_long_max)
+        )
+
+        df["short_setup"] = (
+            (df["trend_down"] == 1)
+            & (df["close"] >= pullback_short_level)
+            & (df["rsi"] >= self.rsi_short_min)
+        )
+
+        return df
+
+    def signal(self, row: pd.Series):
+        if bool(row.get("long_setup", False)):
+            return 1
+        if bool(row.get("short_setup", False)):
+            return -1
+        return 0
+
+
+# --------------------------------------------------------------------
+# Strategy 5: EMACrossADX – קרוס ממוצעים + ADX
+# --------------------------------------------------------------------
+class EMACrossADX:
+    """
+    אסטרטגיית קרוס של ממוצעים נעים + ADX:
+
+    לונג:
+      - EMA מהיר חוצה מלמטה למעלה את EMA האיטי
+      - מחיר מעל EMA האיטי
+      - ADX מעל סף -> טרנד אמיתי, לא רעש
+
+    שורט:
+      - EMA מהיר חוצה מלמעלה למטה את EMA האיטי
+      - מחיר מתחת EMA האיטי
+      - ADX מעל סף
+    """
+
+    def __init__(
+        self,
+        ema_fast_len: int = 20,
+        ema_slow_len: int = 50,
+        adx_len: int = 14,
+        adx_min: float = 18,
+    ):
+        self.ema_fast_len = int(ema_fast_len)
+        self.ema_slow_len = int(ema_slow_len)
+        self.adx_len = int(adx_len)
+        self.adx_min = float(adx_min)
+
+        # fallback length לדונצ'יאן אם צריך
+        self.dlen = ema_slow_len
+
+    def prepare(self, df_ltf: pd.DataFrame, df_htf: pd.DataFrame):
+        df = df_ltf.copy()
+
+        # EMA מהיר ואיטי
+        df["ema_fast"] = df["close"].ewm(span=self.ema_fast_len, adjust=False).mean()
+        df["ema_slow"] = df["close"].ewm(span=self.ema_slow_len, adjust=False).mean()
+
+        # ADX
+        df["adx"] = adx(df, self.adx_len)
+
+        # חישוב קרוס
+        ema_fast_prev = df["ema_fast"].shift(1)
+        ema_slow_prev = df["ema_slow"].shift(1)
+
+        cross_up = (df["ema_fast"] > df["ema_slow"]) & (ema_fast_prev <= ema_slow_prev)
+        cross_dn = (df["ema_fast"] < df["ema_slow"]) & (ema_fast_prev >= ema_slow_prev)
+
+        cond_adx = df["adx"] >= self.adx_min
+
+        df["long_setup"] = cross_up & cond_adx & (df["close"] > df["ema_slow"])
+        df["short_setup"] = cross_dn & cond_adx & (df["close"] < df["ema_slow"])
+
+        return df
+
+    def signal(self, row: pd.Series):
+        if bool(row.get("long_setup", False)):
+            return 1
+        if bool(row.get("short_setup", False)):
+            return -1
+        return 0
+
+
+# --------------------------------------------------------------------
 # Strategy registry / factory
 # --------------------------------------------------------------------
 STRATEGY_REGISTRY = {
     "DONCHIAN_ADX_RSI": DonchianTrendADXRSI,
     "TURTLE_TREND_V2": TrendTurtleV2,
     "MEAN_REVERSION_RSI": MeanReversionRSI,
+    "RSI_TREND_PULLBACK": RSITrendPullback,
+    "EMA_CROSS_ADX": EMACrossADX,
 }
 
 
