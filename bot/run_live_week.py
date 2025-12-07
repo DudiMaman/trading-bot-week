@@ -46,7 +46,7 @@ for p in (ROOT_DIR, THIS_DIR):
     if p not in sys.path:
         sys.path.append(p)
 
-from bot.strategies import DonchianTrendADXRSI
+from bot.strategies import get_strategy_class
 from bot.risk import RiskManager, TradeManager
 from bot.utils import atr as calc_atr
 from bot.connectors.ccxt_connector import CCXTConnector
@@ -686,15 +686,27 @@ def main():
     max_notional_pct_hard: float = 0.20  # fallback, המוח יכול לעדכן
     last_brain_update_ts: float = 0.0
 
-    # Strategy & trade manager (safe kwargs)
+    # Strategy & trade manager (safe kwargs + STRATEGY_NAME)
     raw_s = cfg.get("strategy", {}) or {}
-    accepted_s = set(inspect.signature(DonchianTrendADXRSI).parameters.keys())
-    clean_s = {k: v for k, v in raw_s.items() if k in accepted_s}
-    donchian_len_cfg = int(raw_s.get("donchian_len", 4))
-    unknown_s = sorted(set(raw_s.keys()) - accepted_s)
+
+    # שם הסטרטגיה:
+    # 1. ENV: STRATEGY_NAME
+    # 2. אם אין – מתוך הקונפיג (strategy.name)
+    # 3. אם גם שם אין – default DONCHIAN_ADX_RSI
+    strategy_name = os.getenv("STRATEGY_NAME", raw_s.get("name", "DONCHIAN_ADX_RSI"))
+    StrategyClass = get_strategy_class(strategy_name)
+
+    accepted_s = set(inspect.signature(StrategyClass).parameters.keys())
+    clean_s = {k: v for k, v in raw_s.items() if k in accepted_s and k != "name"}
+    unknown_s = sorted(set(raw_s.keys()) - accepted_s - {"name"})
     if unknown_s:
-        print(f"⚠️ Ignoring unknown strategy keys: {unknown_s}")
-    strat = DonchianTrendADXRSI(**clean_s)
+        print(f"⚠️ Ignoring unknown strategy keys for {strategy_name}: {unknown_s}")
+
+    strat = StrategyClass(**clean_s)
+
+    # donchian_len_cfg משמש fallback ב-ensure_signal_columns
+    donchian_len_cfg = int(getattr(strat, "dlen", raw_s.get("donchian_len", 4)))
+    print(f"[STRATEGY] Using {StrategyClass.__name__} (name={strategy_name}), dlen={donchian_len_cfg}")
 
     raw_t = cfg.get("trade_manager", {}) or {}
     accepted_t = set(inspect.signature(TradeManager).parameters.keys())
