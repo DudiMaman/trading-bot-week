@@ -1,7 +1,7 @@
 # bot/run_live_week.py
 # ------------------------------------------------------------
 # Trading bot (weekly loop) with:
-# - Safe key filtering for DonchianTrendADXRSI / TradeManager
+# - Safe key filtering for strategies / TradeManager
 # - Standardized OHLCV (no KeyError('high'))
 # - Support for CCXT (e.g. Bybit) and Alpaca
 # - Basic TP/SL, time exit and equity logging
@@ -10,6 +10,7 @@
 #     * blocked symbols
 #     * hard cap per-position notional
 # - Hard filter: never trade stable/stable pairs (USDC/USD, USDT/USDC, etc.)
+# - New: asset_type tagging (EQUITY/CRYPTO) + EOD exit for equities
 # ------------------------------------------------------------
 
 import os
@@ -171,6 +172,30 @@ def is_stable_pair_symbol(symbol: str) -> bool:
     if not base or not quote:
         return False
     return base in STABLE_TOKENS and quote in STABLE_TOKENS
+
+
+# ------------------------
+# Asset type helpers (EQUITY / CRYPTO)
+# ------------------------
+def is_alpaca_equity_symbol(symbol: str) -> bool:
+    """
+    באלפאקה:
+    - מניות/ETF = סימבול בלי '/'
+    - קריפטו   = BTC/USD, ETH/USD וכו'
+    """
+    return "/" not in symbol
+
+
+def classify_asset_type(conn_type: str, symbol: str) -> str:
+    """
+    מחזיר 'EQUITY' או 'CRYPTO' לפי סוג הקונקטור והסימבול.
+    כרגע:
+      - Alpaca ללא '/' => EQUITY
+      - אחרת => CRYPTO
+    """
+    if conn_type == "alpaca" and is_alpaca_equity_symbol(symbol):
+        return "EQUITY"
+    return "CRYPTO"
 
 
 # ------------------------
@@ -619,16 +644,6 @@ def append_trade(
 # ------------------------
 # Market hours helpers (חוקת "הזמנות כשהבורסה סגורה v1")
 # ------------------------
-def is_alpaca_equity_symbol(symbol: str) -> bool:
-    """
-    באלפאקה:
-    - מניות/ETF = סימבול בלי '/'
-    - קריפטו = BTC/USD, ETH/USD וכו'
-    (הקובץ עובד עם שמות כמו 'ETH/USD' בקונפיג, אז זה פשוט.)
-    """
-    return "/" not in symbol
-
-
 def is_equity_market_open(now_utc: datetime, market_tz) -> bool:
     """
     בודק אם שוק המניות פתוח לפי זמן מקומי:
@@ -669,6 +684,7 @@ def main():
     equities_market_hours_only = bool(
         session_rules.get("equities_market_hours_only", False)
     )
+    crypto_24_7 = bool(session_rules.get("crypto_24_7", True))
 
     # DB (optional)
     db = None
@@ -686,7 +702,7 @@ def main():
     max_notional_pct_hard: float = 0.20  # fallback, המוח יכול לעדכן
     last_brain_update_ts: float = 0.0
 
-        # Strategy & trade manager (safe kwargs + בחירת סטרטגיה דינמית)
+    # Strategy & trade manager (safe kwargs + בחירת סטרטגיה דינמית)
     raw_s = cfg.get("strategy", {}) or {}
 
     # שם הסטרטגיה:
@@ -708,26 +724,12 @@ def main():
 
     strat = StrategyClass(**clean_s)
 
-    # אורך Donchian לצורך fallback ב-run_live_week
-    donchian_len_cfg = int(getattr(strat, "dlen", raw_s.get("donchian_len", 4)))
-
-    print(
-        f"[STRATEGY] Using {StrategyClass.__name__} "
-        f"(name={strategy_name}), dlen={donchian_len_cfg}"
-    )
-
-
-    accepted_s = set(inspect.signature(StrategyClass).parameters.keys())
-    clean_s = {k: v for k, v in raw_s.items() if k in accepted_s and k != "name"}
-    unknown_s = sorted(set(raw_s.keys()) - accepted_s - {"name"})
-    if unknown_s:
-        print(f"⚠️ Ignoring unknown strategy keys for {strategy_name}: {unknown_s}")
-
-    strat = StrategyClass(**clean_s)
-
     # donchian_len_cfg משמש fallback ב-ensure_signal_columns
     donchian_len_cfg = int(getattr(strat, "dlen", raw_s.get("donchian_len", 4)))
-    print(f"[STRATEGY] Using {StrategyClass.__name__} (name={strategy_name}), dlen={donchian_len_cfg}")
+    print(
+        f"[STRATEGY] Using {StrategyClass.__name__} (name={strategy_name}), "
+        f"dlen={donchian_len_cfg}"
+    )
 
     raw_t = cfg.get("trade_manager", {}) or {}
     accepted_t = set(inspect.signature(TradeManager).parameters.keys())
@@ -990,6 +992,8 @@ def main():
             qty = pos["qty"]
             R = pos["R"]
             conn = pos.get("conn")
+            asset_type = (pos.get("asset_type") or "CRYPTO").upper()
+            is_equity_asset = asset_type == "EQUITY"
 
             # trailing SL (דינמי לפי המוח)
             if atr_now:
@@ -1280,7 +1284,7 @@ def main():
 
                     to_close.append(key)
 
-            # TIME exit
+            # TIME exit (bars-based)
             pos["bars"] += 1
             max_bars_in_trade = getattr(tm, "max_bars_in_trade", 48)
             if pos["bars"] >= max_bars_in_trade and not pos["tp2_done"]:
@@ -1375,6 +1379,105 @@ def main():
                     )
 
                     to_close.append(key)
+                    continue
+
+            # EOD exit for EQUITY – לא נשארים עם מניות אחרי סגירת השוק
+            if (
+                is_equity_asset
+                and equities_market_hours_only
+                and not is_equity_market_open(now_utc, market_tz)
+                and key not in to_close
+                and pos.get("qty", 0.0) > 0
+            ):
+                exit_side = "sell" if side == "long" else "buy"
+                requested_close_qty = pos["qty"]
+
+                close_qty, live_qty = compute_close_qty(
+                    conn, key[1], side, requested_close_qty, pos["qty"]
+                )
+
+                min_qty = 0.0
+                if conn is not None and hasattr(conn, "exchange"):
+                    try:
+                        market = conn.exchange.market(key[1])
+                        min_qty = get_min_amount_from_market(market)
+                    except Exception as e:
+                        print(f"[EOD] failed to get min_qty for {key}: {e}")
+
+                if (
+                    live_qty is not None
+                    and live_qty > 0
+                    and min_qty > 0
+                    and live_qty < min_qty
+                ):
+                    print(
+                        f"[EOD] dust on {key}: live_qty {live_qty} < min_qty {min_qty} – marking closed"
+                    )
+                    pos["qty"] = 0.0
+                    trade_id = pos.get("trade_id")
+                    if trade_id and db and hasattr(db, "close_live_trade"):
+                        try:
+                            db.close_live_trade(
+                                trade_id=trade_id,
+                                exit_price=price,
+                                realized_pnl=pos.get("realized_pnl", 0.0),
+                                exit_type="EOD_DUST",
+                                equity_at_exit=equity,
+                            )
+                        except Exception as e:
+                            print(f"[WARN] close_live_trade (EOD_DUST) failed for {key}: {e}")
+                    to_close.append(key)
+                    continue
+
+                if close_qty <= 0 or conn is None:
+                    print(f"[EOD] no qty to close for {key}")
+                else:
+                    order_id = place_order(conn, key[1], exit_side, close_qty, reduce_only=True)
+                    if not order_id:
+                        print(f"[EOD] order failed for {key}")
+                    else:
+                        exit_price = price
+                        pnl = (
+                            (exit_price - entry) * close_qty
+                            if side == "long"
+                            else (entry - exit_price) * close_qty
+                        )
+                        equity += pnl
+                        pos["realized_pnl"] = pos.get("realized_pnl", 0.0) + pnl
+
+                        trade_id = pos.get("trade_id")
+                        if trade_id and db and hasattr(db, "close_live_trade"):
+                            try:
+                                db.close_live_trade(
+                                    trade_id=trade_id,
+                                    exit_price=exit_price,
+                                    realized_pnl=pos.get("realized_pnl", pnl),
+                                    exit_type="EOD",
+                                    equity_at_exit=equity,
+                                )
+                            except Exception as e:
+                                print(f"[WARN] close_live_trade (EOD) failed for {key}: {e}")
+
+                        new_qty_raw = max(
+                            0.0,
+                            (live_qty if live_qty is not None else pos["qty"]) - close_qty,
+                        )
+                        pos["qty"] = normalize_position_qty(conn, key[1], new_qty_raw)
+
+                        append_trade(
+                            rows_trades,
+                            now_utc,
+                            key[0],
+                            key[1],
+                            "EOD",
+                            side,
+                            exit_price,
+                            close_qty,
+                            pnl,
+                            equity,
+                        )
+
+                        to_close.append(key)
 
         for key in to_close:
             open_positions.pop(key, None)
@@ -1393,6 +1496,7 @@ def main():
 
         # ---------------- new entries ----------------
         for c_cfg, conn in conns:
+            ctype = c_cfg.get("type", "ccxt")
             for sym in c_cfg.get("symbols", []):
                 key = (c_cfg.get("name", "ccxt"), sym)
 
@@ -1400,8 +1504,14 @@ def main():
                 if is_stable_pair_symbol(sym):
                     continue
 
+                asset_type = classify_asset_type(ctype, sym)
+
                 # Brain: do not open new trades on blocked symbols
                 if sym in blocked_symbols:
+                    continue
+
+                # כיבוי קריפטו אם crypto_24_7=False
+                if asset_type == "CRYPTO" and not crypto_24_7:
                     continue
 
                 if remaining_notional <= 0:
@@ -1415,11 +1525,10 @@ def main():
 
                 # חוקת "הזמנות כשהבורסה סגורה":
                 # אם מדובר באלפאקה + מניה/ETF – לא פותחים טרייד מחוץ לשעות המסחר.
-                ctype = c_cfg.get("type", "ccxt")
                 if (
                     ctype == "alpaca"
                     and equities_market_hours_only
-                    and is_alpaca_equity_symbol(sym)
+                    and asset_type == "EQUITY"
                 ):
                     if not is_equity_market_open(now_utc, market_tz):
                         continue
@@ -1476,7 +1585,7 @@ def main():
                 qty_cap_equity = (equity * rm.max_position_pct) / max(price, 1e-9)
                 qty_cap_remaining = remaining_notional / max(price, 1e-9)
 
-                # Hard cap per position (פתרון טסלה) – למשל 20% מהתיק
+                # Hard cap per position – למשל 20% מהתיק
                 hard_notional_cap = max_notional_pct_hard * equity
                 qty_cap_hard = hard_notional_cap / max(price, 1e-9)
 
@@ -1560,6 +1669,8 @@ def main():
                     "entry_order_id": order_id,
                     "trade_id": trade_id,
                     "realized_pnl": 0.0,
+                    "asset_type": asset_type,          # NEW: EQUITY / CRYPTO
+                    "connector_type": ctype,
                 }
 
                 append_trade(
