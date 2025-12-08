@@ -176,19 +176,40 @@ session_rules:
   cancel_stale_equity_orders_on_open: true  # (עדיין לא ממומש בקוד)
   crypto_24_7: true                     # קריפטו – מותר 24/7
 
+  # חדשים – למסחר יומי הדוק:
+  equities_flat_at_close: true          # לסגור כל פוזיציות מניה בסוף היום
+  equities_flat_minutes_before_close: 5 # כמה דקות לפני הסגירה לבצע flatten
+  max_position_hours: 24                # גיל מקסימלי לפוזיציה (לכל הנכסים) – 24 שעות
+
 strategy:
   name: DONCHIAN_ADX_RSI   # ברירת מחדל אם אין STRATEGY_NAME ב-ENV
   donchian_len: 14
   adx_min: 18
 
 trade_manager:
-  atr_k_sl: 2.0
+  # סטופ התחלתי צמוד יותר
+  atr_k_sl: 1.2
+
+  # יעדי רווח
   r1_R: 1.0
   r2_R: 2.0
-  p1_pct: 0.3
-  p2_pct: 0.7
-  be_after_R: 1.0
-  max_bars_in_trade: 120
+
+  # חלוקת כמות ב-TP1/TP2
+  p1_pct: 0.4
+  p2_pct: 0.6
+
+  # מעבר ל-BE מוקדם יותר
+  be_after_R: 0.6
+
+  # טריילינג קצת יותר אגרסיבי
+  trail_atr_k: 0.9
+
+  # זמן מקסימלי בעסקה (בנרות) – 72 ברים של 5m ≈ 6 שעות
+  max_bars_in_trade: 72
+
+  # אופציונלי – לחיתוך הפסד מהיר (נטפל בצד הקוד כשתדביק את run_live_week.py)
+  quick_loss_bars: 12    # אחרי ~שעה (12 * 5m)
+  quick_loss_R: 0.7      # אם אחרי הזמן הזה אנחנו ב-0.7R- נגדנו – יוצאים
 
 portfolio:
   equity0: "auto"        # הבוט מחשב בעצמו את גודל ההון ההתחלתי
