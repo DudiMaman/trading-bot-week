@@ -10,7 +10,8 @@
 #     * blocked symbols
 #     * hard cap per-position notional
 # - Hard filter: never trade stable/stable pairs (USDC/USD, USDT/USDC, etc.)
-# - New: asset_type tagging (EQUITY/CRYPTO) + EOD exit for equities
+# - Asset_type tagging (EQUITY/CRYPTO) + EOD exit for equities
+# - SL/TP tuning: lose small & fast, let winners run with trailing SL
 # ------------------------------------------------------------
 
 import os
@@ -759,11 +760,11 @@ def main():
         except Exception:
             equity = 0.0
 
-    # RiskManager (הערכים יתעדכנו מהמוח)
+    # RiskManager – ברירת מחדל 2% סיכון לטרייד, 20% חשיפה מקס לנכס
     rm = RiskManager(
         equity=equity,
-        risk_per_trade=float(portfolio.get("risk_per_trade", 0.03)),
-        max_position_pct=float(portfolio.get("max_position_pct", 1.0)),
+        risk_per_trade=float(portfolio.get("risk_per_trade", 0.02)),
+        max_position_pct=float(portfolio.get("max_position_pct", 0.20)),
     )
 
     config_id = os.getenv("BOT_CONFIG_ID", "SAFE_V1")
@@ -995,9 +996,9 @@ def main():
             asset_type = (pos.get("asset_type") or "CRYPTO").upper()
             is_equity_asset = asset_type == "EQUITY"
 
-            # trailing SL (דינמי לפי המוח)
+            # trailing SL (דינמי לפי המוח) – בררת מחדל יותר צמודה
             if atr_now:
-                k_trail = getattr(tm, "trail_atr_k", 1.2)
+                k_trail = getattr(tm, "trail_atr_k", 1.0)
                 trail = (
                     price - k_trail * atr_now
                     if side == "long"
@@ -1008,9 +1009,9 @@ def main():
                 else:
                     pos["sl"] = min(pos["sl"], trail)
 
-            # move SL to BE after certain R
+            # move SL to BE after certain R – בררת מחדל 0.5R
             if not pos["moved_to_be"] and atr_now:
-                be_after_R = getattr(tm, "be_after_R", 0.8)
+                be_after_R = getattr(tm, "be_after_R", 0.5)
                 if side == "long" and price >= entry + be_after_R * R:
                     pos["sl"] = max(pos["sl"], entry)
                     pos["moved_to_be"] = True
@@ -1284,9 +1285,9 @@ def main():
 
                     to_close.append(key)
 
-            # TIME exit (bars-based)
+            # TIME exit (bars-based) – בררת מחדל 96 ברים (~8 שעות על 5m)
             pos["bars"] += 1
-            max_bars_in_trade = getattr(tm, "max_bars_in_trade", 48)
+            max_bars_in_trade = getattr(tm, "max_bars_in_trade", 96)
             if pos["bars"] >= max_bars_in_trade and not pos["tp2_done"]:
                 exit_side = "sell" if side == "long" else "buy"
                 requested_close_qty = pos["qty"]
@@ -1545,7 +1546,8 @@ def main():
                 atr_now = float(row["atr"])
                 side = "long" if sig == 1 else "short"
 
-                atr_k_sl = getattr(tm, "atr_k_sl", 1.5)
+                # SL קרוב יותר כסטנדרט – מפסידים מעט ומהר
+                atr_k_sl = getattr(tm, "atr_k_sl", 1.2)
                 sl = (
                     price - atr_k_sl * atr_now
                     if side == "long"
@@ -1613,7 +1615,7 @@ def main():
                     continue
 
                 r1_R = getattr(tm, "r1_R", 1.0)
-                r2_R = getattr(tm, "r2_R", 2.5)
+                r2_R = getattr(tm, "r2_R", 3.0)
 
                 tp1 = (
                     price + r1_R * R
@@ -1669,7 +1671,7 @@ def main():
                     "entry_order_id": order_id,
                     "trade_id": trade_id,
                     "realized_pnl": 0.0,
-                    "asset_type": asset_type,          # NEW: EQUITY / CRYPTO
+                    "asset_type": asset_type,          # EQUITY / CRYPTO
                     "connector_type": ctype,
                 }
 
